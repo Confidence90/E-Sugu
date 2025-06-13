@@ -1,0 +1,29 @@
+# Environnements virtuels
+venv/
+env/
+
+# Fichiers Python compilés
+__pycache__/
+*.py[cod]
+
+# Fichier de config local
+.env
+
+# Fichiers SQLite (optionnel)
+*.sqlite3
+
+# Fichiers de log
+*.log
+
+# Répertoire de collecte des fichiers statiques
+staticfiles/
+
+# Cache & IDE
+*.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Fichiers générés
+*.pot
+*.mo
