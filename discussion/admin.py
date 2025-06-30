@@ -2,7 +2,10 @@
 from django.contrib import admin
 from .models import Message
 
-@admin.register(Message)
+
 class MessageAdmin(admin.ModelAdmin):
-    list_display = ['id', 'sender', 'receiver', 'listing', 'content', 'timestamp']
-    search_fields = ['sender__name', 'receiver__name', 'content']
+    list_display = ['id', 'discussion', 'sender', 'content', 'created_at']
+    search_fields = ['content', 'sender__username']
+    list_filter = ['created_at', 'sender']
+
+admin.site.register(Message, MessageAdmin)

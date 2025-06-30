@@ -1,19 +1,25 @@
-# messages/serializers.py
 from rest_framework import serializers
-from .models import Message
-from users.serializers import UserProfileSerializer
-from listings.serializers import ListingSerializer
+from .models import Discussion, Message
+from users.serializers import UserSerializer  # si tu en as un
+from listings.serializers import ListingSerializer  # idem
 
 class MessageSerializer(serializers.ModelSerializer):
-    sender = UserProfileSerializer(read_only=True)
-    receiver = UserProfileSerializer(read_only=True)
-    listing = ListingSerializer(read_only=True)
+    sender = serializers.StringRelatedField(read_only=True)
 
     class Meta:
         model = Message
-        fields = ['id', 'listing', 'sender', 'receiver', 'content', 'timestamp']
+        fields = ['id', 'sender', 'content', 'created_at']
 
-class CreateMessageSerializer(serializers.ModelSerializer):
+class DiscussionSerializer(serializers.ModelSerializer):
+    listing = serializers.StringRelatedField()
+    buyer = serializers.StringRelatedField()
+    seller = serializers.StringRelatedField()
+    messages = MessageSerializer(many=True, read_only=True)
+
     class Meta:
-        model = Message
-        fields = ['listing', 'receiver', 'content']
+        model = Discussion
+        fields = ['id', 'listing', 'buyer', 'seller', 'created_at', 'messages']
+
+class CreateMessageSerializer(serializers.Serializer):
+    listing_id = serializers.IntegerField()
+    content = serializers.CharField()

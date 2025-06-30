@@ -9,3 +9,4 @@ router.register('', ListingViewSet, basename='listing')
 urlpatterns = [
     path('', include(router.urls)),
 ]
+

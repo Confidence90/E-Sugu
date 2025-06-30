@@ -5,9 +5,9 @@ from listings.serializers import ListingSerializer
 from users.serializers import UserProfileSerializer
 
 class TransactionSerializer(serializers.ModelSerializer):
-    listing = ListingSerializer(read_only=True)
-    buyer = UserProfileSerializer(read_only=True)
-    seller = UserProfileSerializer(read_only=True)
+    class Meta:
+        model = Transaction
+        fields = '__all__'
 
     class Meta:
         model = Transaction

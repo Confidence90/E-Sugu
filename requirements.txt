@@ -9,3 +9,5 @@ python-decouple==3.8
 python-dotenv==1.1.0
 sqlparse==0.5.3
 tzdata==2025.2
+django-filter==25.1
+

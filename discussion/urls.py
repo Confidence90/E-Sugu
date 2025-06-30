@@ -1,8 +1,10 @@
-# messages/urls.py
-from django.urls import path
-from .views import MessageView, MessageDetailView
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import DiscussionViewSet, SendMessageView
 
-urlpatterns = [
-    path('', MessageView.as_view(), name='discussion'),
-    path('<int:id>/', MessageDetailView.as_view(), name='message-detail'),
+router = DefaultRouter()
+router.register('discussions', DiscussionViewSet, basename='discussion')
+
+urlpatterns = router.urls + [
+    path('send-message/', SendMessageView.as_view(), name='send_message'),
 ]

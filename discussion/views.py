@@ -1,38 +1,50 @@
-# messages/views.py
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
-from rest_framework import status
-from .models import Message
-from .serializers import MessageSerializer, CreateMessageSerializer
+from rest_framework.views import APIView
+from .models import Discussion, Message
+from listings.models import Listing
+from .serializers import DiscussionSerializer, MessageSerializer, CreateMessageSerializer
+from users.models import User
+from django.db import models
 
-class MessageView(APIView):
-    permission_classes = [IsAuthenticated]
+from rest_framework.decorators import action
+
+class DiscussionViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = DiscussionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        return Discussion.objects.filter(models.Q(buyer=user) | models.Q(seller=user))
+
+class SendMessageView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = CreateMessageSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save(sender=request.user)
-            return Response(MessageSerializer(serializer.instance).data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            listing_id = serializer.validated_data['listing_id']
+            content = serializer.validated_data['content']
+            try:
+                listing = Listing.objects.get(id=listing_id)
+                seller = listing.user
+                buyer = request.user
 
-    def get(self, request):
-        listing_id = request.query_params.get('listing_id')
-        messages = Message.objects.filter(sender=request.user) | Message.objects.filter(receiver=request.user)
-        if listing_id:
-            messages = messages.filter(listing_id=listing_id)
-        serializer = MessageSerializer(messages, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+                if seller == buyer:
+                    return Response({'error': "Tu ne peux pas t'envoyer un message."}, status=400)
 
-class MessageDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+                discussion, created = Discussion.objects.get_or_create(
+                    listing=listing, buyer=buyer, seller=seller
+                )
 
-    def get(self, request, id):
-        try:
-            message = Message.objects.get(id=id)
-            if message.sender == request.user or message.receiver == request.user:
-                serializer = MessageSerializer(message)
-                return Response(serializer.data, status=status.HTTP_200_OK)
-            return Response({'error': 'Non autorisé'}, status=status.HTTP_403_FORBIDDEN)
-        except Message.DoesNotExist:
-            return Response({'error': 'Message non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+                message = Message.objects.create(
+                    discussion=discussion,
+                    sender=buyer,
+                    content=content
+                )
+
+                return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+            except Listing.DoesNotExist:
+                return Response({'error': 'Annonce non trouvée.'}, status=404)
+        return Response(serializer.errors, status=400)

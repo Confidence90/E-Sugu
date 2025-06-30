@@ -7,6 +7,9 @@ from rest_framework import status
 from .models import Listing, Image
 from .serializers import ListingSerializer, ImageUploadSerializer
 from categories.models import Category
+from django_filters.rest_framework import DjangoFilterBackend
+from .filters import ListingFilter
+from rest_framework import viewsets, filters
 
 class IsOwner(BasePermission):
     def has_object_permission(self, request, view, obj):
@@ -17,13 +20,18 @@ class ListingViewSet(viewsets.ModelViewSet):
     serializer_class = ListingSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
 
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = ListingFilter
+    search_fields = ['title', 'description', 'location']
+    ordering_fields = ['price', 'created_at']
+    ordering = ['-created_at'] 
     def perform_create(self, serializer):
         category_id = self.request.data.get('category_id')
         try:
             category = Category.objects.get(id=category_id)
             serializer.save(user=self.request.user, category=category)
         except Category.DoesNotExist:
-            raise serializers.ValidationError("Catégorie non trouvée")
+            raise serializer.ValidationError("Catégorie non trouvée")
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -51,3 +59,14 @@ class ListingViewSet(viewsets.ModelViewSet):
             Image.objects.create(listing=listing, image=serializer.validated_data['image'])
             return Response({'message': 'Image ajoutée'}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsOwner])
+    def mark_as_sold(self, request, pk=None):
+        listing = self.get_object()
+        listing.mark_as_sold()
+        return Response({'message': 'Annonce marquée comme vendue.'}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsOwner])
+    def deactivate(self, request, pk=None):
+        listing = self.get_object()
+        listing.deactivate()
+        return Response({'message': 'Annonce désactivée (expirée).'}, status=status.HTTP_200_OK)
