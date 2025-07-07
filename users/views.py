@@ -1,16 +1,16 @@
 from rest_framework.views import APIView
+from django.utils.http import urlsafe_base64_decode
+from django.utils.encoding import smart_str, DjangoUnicodeDecodeError
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from rest_framework.generics import GenericAPIView
 from django.conf import settings
-from twilio.rest import Client
-from .models import User
-from .serializers import (
-    UserSerializer,
-    LoginSerializer,
-    UserProfileSerializer
-)
+from .utils import assign_otp_to_user, send_otp_email, verify_otp
+from .models import User, OneTimePassword
+from .serializers import UserSerializer, LoginSerializer, UserProfileSerializer,SetNewPasswordSerializer,RequestResetPasswordAPISerializer,LogoutSerializer
 
 # 🚀 Créer un compte utilisateur
 class RegisterView(APIView):
@@ -21,86 +21,85 @@ class RegisterView(APIView):
         if serializer.is_valid():
             user = serializer.save()
 
-            # Activer flag KYC vendeur
-            if user.is_seller:
-                user.is_seller_pending = True
+            try:
+                code = assign_otp_to_user(user)
+                send_otp_email(user, code)
+            except Exception as e:
+                user.delete()
+                return Response(
+                    {'error': f"Échec d'envoi du code OTP. Détail : {str(e)}"},
+                    status=500
+                )
 
-            # En mode dev, activer sans vérification
+            if user.is_seller:
+                user.is_seller_pending = True  # Assure-toi que ce champ existe dans ton modèle
+
             if settings.DEBUG:
                 user.is_active = True
                 user.save()
-            else:
-                # Envoyer OTP avec Twilio
-                client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-                client.verify.services(settings.TWILIO_VERIFY_SERVICE_SID).verifications.create(
-                    to=user.phone_full,
-                    channel='sms'
-                )
+                return Response({
+                    'user_id': user.id,
+                    'message': 'Compte actif. KYC en attente.' if user.is_seller else 'Compte créé avec succès.'
+                }, status=status.HTTP_201_CREATED)
+
             return Response({
                 'user_id': user.id,
-                'message': 'Code OTP envoyé pour vérification' if not settings.DEBUG else (
-                    'Compte actif. KYC en attente.' if user.is_seller else 'Compte créé avec succès.'
-                )
+                'message': 'Code OTP envoyé pour vérification'
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# ✅ Vérifier un compte via code OTP
-class VerifyOTPView(APIView):
+
+# ✅ Vérifier le code OTP
+class VerifyUserOTP(GenericAPIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        phone_full = request.data.get('phone_full')
-        otp = request.data.get('otp')
+        otpcode = request.data.get('otp')
+
+        if not otpcode:
+            return Response({'message': 'Code OTP requis'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            user = User.objects.get(phone_full=phone_full)
-            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-            result = client.verify.services(settings.TWILIO_VERIFY_SERVICE_SID).verification_checks.create(
-                to=phone_full, code=otp
-            )
-            if result.status == 'approved':
+            otp_obj = OneTimePassword.objects.get(code=otpcode)
+            user = otp_obj.user
+
+            is_valid, message = verify_otp(user, otpcode)
+
+            if is_valid:
                 user.is_active = True
                 user.save()
-                refresh = RefreshToken.for_user(user)
-                return Response({
-                    'message': 'Compte vérifié avec succès',
-                    'token': str(refresh.access_token),
-                    'refresh_token': str(refresh),
-                    'user_id': user.id
-                }, status=status.HTTP_200_OK)
-            return Response({'error': 'OTP invalide'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'message': 'Email vérifié avec succès.'}, status=status.HTTP_200_OK)
 
-        except User.DoesNotExist:
-            return Response({'error': 'Utilisateur non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'message': message}, status=status.HTTP_400_BAD_REQUEST)
+
+        except OneTimePassword.DoesNotExist:
+            return Response({'message': 'Code invalide ou expiré.'}, status=status.HTTP_404_NOT_FOUND)
+
 
 # 🔐 Login
-class LoginView(APIView):
+class LoginView(GenericAPIView):
+    serializer_class = LoginSerializer
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.validated_data['user']
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                'token': str(refresh.access_token),
-                'refresh_token': str(refresh),
-                'user_id': user.id
-            }, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.serializer_class(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 # 🚪 Logout
-class LogoutView(APIView):
-    permission_classes = [IsAuthenticated]
+class LogoutView(GenericAPIView):
+    serializer_class=LogoutSerializer
+    permission_classes=[IsAuthenticated]
 
     def post(self, request):
-        try:
-            refresh_token = request.data.get('refresh_token')
-            token = RefreshToken(refresh_token)
-            token.blacklist()
-            return Response({'message': 'Déconnexion réussie'}, status=status.HTTP_200_OK)
-        except Exception:
-            return Response({'error': 'Token invalide'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({'message': 'Déconnexion réussie ✅'},status=status.HTTP_204_NO_CONTENT)
+
+
 
 # 🔁 Rafraîchir le token
 class RefreshTokenView(APIView):
@@ -117,21 +116,6 @@ class RefreshTokenView(APIView):
         except Exception:
             return Response({'error': 'Token invalide'}, status=status.HTTP_401_UNAUTHORIZED)
 
-# 🔑 Réinitialisation par téléphone
-class PasswordResetView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        identifier = request.data.get('identifier')
-        try:
-            user = User.objects.get(phone_full=identifier) if identifier.startswith('+') else User.objects.get(email=identifier)
-            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-            client.verify.services(settings.TWILIO_VERIFY_SERVICE_SID).verifications.create(
-                to=user.phone_full, channel='sms'
-            )
-            return Response({'message': 'Code envoyé pour réinitialisation'}, status=status.HTTP_200_OK)
-        except User.DoesNotExist:
-            return Response({'error': 'Aucun utilisateur trouvé'}, status=status.HTTP_404_NOT_FOUND)
 
 # 👤 Consulter & modifier son profil
 class ProfileView(APIView):
@@ -147,34 +131,82 @@ class ProfileView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-class RequestResetPasswordAPIView(APIView):
+
+
+# 🔑 Réinitialisation du mot de passe (demande OTP)
+class RequestResetPasswordAPIView(GenericAPIView):
+    serializer_class = RequestResetPasswordAPISerializer
+    permission_classes = [AllowAny]
+
     def post(self, request):
-        phone = request.data.get('phone_full')
-        try:
-            user = User.objects.get(phone_full=phone)
-            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-            client.verify.services(settings.TWILIO_VERIFY_SERVICE_SID).verifications.create(
-                to=phone, channel='sms'
-            )
-            return Response({"message": "Code envoyé avec succès."})
-        except User.DoesNotExist:
-            return Response({"error": "Utilisateur introuvable."}, status=404)  
-class ConfirmResetPasswordAPIView(APIView):
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        return Response(
+            {'message': "Un lien vous a été envoyé à votre boîte email pour réinitialiser votre mot de passe."},
+            status=status.HTTP_200_OK
+        )
+
+
+# 🔒 Réinitialisation du mot de passe (confirmer)
+class ConfirmResetPasswordWithOTPAPIView(GenericAPIView):
     def post(self, request):
-        phone = request.data.get('phone_full')
-        code = request.data.get('otp_code')
+        identifier = request.data.get('identifier')
+        otp_code = request.data.get('otp_code')
         new_password = request.data.get('new_password')
 
-        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        verification = client.verify.services(settings.TWILIO_VERIFY_SERVICE_SID).verification_checks.create(
-            to=phone, code=code
-        )
-        if verification.status == "approved":
-            try:
-                user = User.objects.get(phone_full=phone)
-                user.set_password(new_password)
-                user.save()
-                return Response({"message": "Mot de passe réinitialisé avec succès."})
-            except User.DoesNotExist:
-                return Response({"error": "Utilisateur introuvable."}, status=404)
-        return Response({"error": "Code OTP invalide."}, status=400)
+        if not all([identifier, otp_code, new_password]):
+            return Response({'error': 'Tous les champs sont requis.'}, status=400)
+
+        try:
+            user = User.objects.get(phone_full=identifier) if identifier.startswith('+') else User.objects.get(email=identifier)
+        except User.DoesNotExist:
+            return Response({'error': 'Utilisateur introuvable.'}, status=404)
+
+        is_valid, message = verify_otp(user, otp_code)
+        if not is_valid:
+            return Response({'error': message}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+        return Response({'message': 'Mot de passe réinitialisé avec succès.'}, status=200)
+    
+
+class ConfirmResetPasswordLinkAPIView(GenericAPIView):
+    def get(self, request, uidb64, token):
+        try:
+            user_id = smart_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(id=user_id)
+
+            if not PasswordResetTokenGenerator().check_token(user, token):
+                return Response({'message': 'Le token est invalide ou expiré'}, status=status.HTTP_401_UNAUTHORIZED)
+
+            return Response({
+                'success': True,
+                'message': 'Token valide. Veuillez soumettre votre nouveau mot de passe.',
+                'uidb64': uidb64,
+                'token': token
+            }, status=status.HTTP_200_OK)
+
+        except DjangoUnicodeDecodeError:
+            return Response({'message': 'Le token est invalide ou expiré'}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+# 3. Réinitialisation depuis lien web (POST avec nouveau mot de passe)
+class SetNewPassword(GenericAPIView):
+    serializer_class = SetNewPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def patch(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({'message': 'Mot de passe modifié avec succès 👍'}, status=status.HTTP_200_OK)
+
+class TestAuthenticationView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        data={
+            'msg':'ça fonctionne!'
+        }
+        return Response(data, status=status.HTTP_200_OK)

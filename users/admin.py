@@ -1,26 +1,111 @@
+#admin.py
 from django.contrib import admin
 from django.utils.html import format_html
 from django.conf import settings
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.admin import SimpleListFilter
 from .models import User
 from twilio.rest import Client
+from datetime import timedelta
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+from .forms import UserCreationForm, UserChangeForm
+
+
+# 📊 Filtre personnalisé : activité récente
+class RecentLoginFilter(SimpleListFilter):
+    title = "Connexion récente"
+    parameter_name = "recent_login"
+
+    def lookups(self, request, model_admin):
+        return [
+            ('24h', "Dernières 24h"),
+            ('7d', "7 derniers jours"),
+        ]
+
+    def queryset(self, request, queryset):
+        now = timezone.now()
+        if self.value() == '24h':
+            return queryset.filter(last_login__gte=now - timedelta(hours=24))
+        elif self.value() == '7d':
+            return queryset.filter(last_login__gte=now - timedelta(days=7))
+        return queryset
+
+class RoleFilter(SimpleListFilter):
+    title = 'Rôle'
+    parameter_name = 'role'
+
+    def lookups(self, request, model_admin):
+        return User.ROLE_CHOICES
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(role=self.value())
+        return queryset
+
+
+# 📞 Filtre personnalisé : type de numéro
+class PhoneTypeFilter(SimpleListFilter):
+    title = 'Type de téléphone'
+    parameter_name = 'phone_type'
+
+    def lookups(self, request, model_admin):
+        return [('intl', '📞 International'), ('local', '📱 National')]
+
+    def queryset(self, request, queryset):
+        if self.value() == 'intl':
+            return queryset.filter(phone_full__startswith='+')
+        elif self.value() == 'local':
+            return queryset.exclude(phone_full__startswith='+')
+        return queryset
+
+# 🔧 Admin personnalisé
 
 @admin.register(User)
-class UserAdmin(admin.ModelAdmin):
-    list_display = [
-        'id', 'nom', 'email', 'telephone', 'actif', 'staff',
-        'date_creation', 'token_display'
-    ]
-    search_fields = ['name', 'email', 'phone_full']
-    list_filter = ['is_active', 'is_staff', 'created_at']
-    actions = [
-        'desactiver_utilisateurs',
-        'reinitialiser_mot_de_passe',
-        'demander_reinitialisation'
-    ]
+class UserAdmin(BaseUserAdmin):
+    ordering = ('email',)
+    list_display = ['id', 'email', 'username', 'is_active', 'is_staff']
+    search_fields = ['email', 'username', 'phone']
+    list_filter = ['is_active', 'is_staff', 'is_superuser',PhoneTypeFilter,RoleFilter]
+    readonly_fields = ['created_at']
+    add_form = UserCreationForm
+    form = UserChangeForm
 
-    def nom(self, obj):
-        return obj.name
-    nom.short_description = "Nom"
+
+    fieldsets = (
+        (None, {'fields': ('email', 'password')}),
+        (_('Informations personnelles'), {
+            'fields': ('first_name', 'last_name', 'username', 'phone', 'phone_full', 'country_code', 'location', 'bio')
+        }),
+        (_('Permissions'), {
+            'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')
+        }),
+        (_('Dates importantes'), {'fields': ('last_login', 'created_at')}),
+        (_('Rôle'), {'fields': ('role',)}),
+    )
+
+    add_fieldsets = (
+    (None, {
+        'classes': ('wide',),
+        'fields': (
+            'email', 'first_name', 'last_name', 'username', 'phone',
+            'phone_full', 'password1', 'password2',
+            'is_staff', 'is_superuser', 'is_active'  # ✅ à ajouter
+        ),
+    }),
+    )
+    actions = [ 'desactiver_utilisateurs', 'reinitialiser_mot_de_passe', 'demander_reinitialisation' ]
+
+
+    def get_fieldsets(self, request, obj=None):
+        if not obj:
+            return self.add_fieldsets
+        return super().get_fieldsets(request, obj)
+
+    def get_form(self, request, obj=None, **kwargs):
+        if not obj:
+            self.fieldsets = self.add_fieldsets
+        return super().get_form(request, obj, **kwargs)
 
     def telephone(self, obj):
         return obj.phone_full
