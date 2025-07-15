@@ -55,7 +55,7 @@ COUNTRY_CHOICES = [
     # Océanie
     ('+61', 'Australie (+61)'), ('+64', 'Nouvelle-Zélande (+64)'), ('+675', 'Papouasie-Nouvelle-Guinée (+675)'),
     ]
-
+AUTH_PROVIDERS ={'email':'email', 'google':'google', 'github':'github', 'facebook':'facebook'}
 
 class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = [
@@ -78,11 +78,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     bio = models.CharField(max_length=100, blank=True, null=True)
     is_seller = models.BooleanField("Vendeur", default=False)
     is_seller_pending = models.BooleanField(default=False)
-    is_active = models.BooleanField("En ligne", default=True)
+    is_active = models.BooleanField("En ligne", default=False)
+    is_verified = models.BooleanField(default=False)
     is_staff = models.BooleanField("Membre admin", default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-
+    auth_provider=models.CharField(max_length=50,default=AUTH_PROVIDERS.get("email"))
     objects = UserManager()
+    full_name = models.CharField(max_length=150, blank=True)
+    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['first_name', 'last_name', 'username', 'phone']
@@ -110,4 +113,4 @@ class OneTimePassword(models.Model):
         return (timezone.now() - self.created_at).total_seconds() < 300
 
     def __str__(self):
-        return f"{self.user.get_full_name()} - code"
+        return f"{self.user.get_full_name} - code"

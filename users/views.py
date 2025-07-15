@@ -3,20 +3,26 @@ from django.utils.http import urlsafe_base64_decode
 from django.utils.encoding import smart_str, DjangoUnicodeDecodeError
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, permissions
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.generics import GenericAPIView
 from django.conf import settings
+from rest_framework import serializers
 from .utils import assign_otp_to_user, send_otp_email, verify_otp
+from rest_framework.parsers import MultiPartParser, FormParser
 from .models import User, OneTimePassword
-from .serializers import UserSerializer, LoginSerializer, UserProfileSerializer,SetNewPasswordSerializer,RequestResetPasswordAPISerializer,LogoutSerializer
+from .serializers import (UserSerializer,LoginSerializer, 
+UserProfileSerializer,SetNewPasswordSerializer,
+RequestResetPasswordAPISerializer,LogoutSerializer,
+GoogleSignInSerializer)
 
 # 🚀 Créer un compte utilisateur
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        print("Données reçues:", request.data) 
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
@@ -34,20 +40,15 @@ class RegisterView(APIView):
             if user.is_seller:
                 user.is_seller_pending = True  # Assure-toi que ce champ existe dans ton modèle
 
-            if settings.DEBUG:
-                user.is_active = True
-                user.save()
-                return Response({
-                    'user_id': user.id,
-                    'message': 'Compte actif. KYC en attente.' if user.is_seller else 'Compte créé avec succès.'
-                }, status=status.HTTP_201_CREATED)
+            
 
             return Response({
                 'user_id': user.id,
                 'message': 'Code OTP envoyé pour vérification'
             }, status=status.HTTP_201_CREATED)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            print("Erreurs de validation:", serializer.errors)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ✅ Vérifier le code OTP
@@ -56,12 +57,12 @@ class VerifyUserOTP(GenericAPIView):
 
     def post(self, request):
         otpcode = request.data.get('otp')
-
+        email = request.data.get('email')
         if not otpcode:
             return Response({'message': 'Code OTP requis'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            otp_obj = OneTimePassword.objects.get(code=otpcode)
+            otp_obj = OneTimePassword.objects.get(code=otpcode, user__email=email)
             user = otp_obj.user
 
             is_valid, message = verify_otp(user, otpcode)
@@ -85,7 +86,17 @@ class LoginView(GenericAPIView):
     def post(self, request):
         serializer = self.serializer_class(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+
+        data = serializer.validated_data  # ✅ C'est ici qu'on récupère les données validées
+        user = data.get("user")
+        return Response({
+            "access": data["access_token"],
+            "refresh": data["refresh_token"],
+            "id": user.id,  # ou data.get("id") si tu veux vraiment inclure l'id ici
+            "email": data["email"],
+            'full_name': f"{user.first_name} {user.last_name}".strip() or user.username
+
+        }, status=status.HTTP_200_OK)
 
 
 # 🚪 Logout
@@ -119,13 +130,13 @@ class RefreshTokenView(APIView):
 
 # 👤 Consulter & modifier son profil
 class ProfileView(APIView):
-    permission_classes = [IsAuthenticated]
-
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
     def get(self, request):
         serializer = UserProfileSerializer(request.user)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
-    def patch(self, request):
+    def put(self, request):
         serializer = UserProfileSerializer(request.user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -191,7 +202,8 @@ class ConfirmResetPasswordLinkAPIView(GenericAPIView):
             return Response({'message': 'Le token est invalide ou expiré'}, status=status.HTTP_401_UNAUTHORIZED)
 
 
-# 3. Réinitialisation depuis lien web (POST avec nouveau mot de passe)
+# 3. Réinitialisation depuis lien web (POST avec n
+# ouveau mot de passe)
 class SetNewPassword(GenericAPIView):
     serializer_class = SetNewPasswordSerializer
     permission_classes = [AllowAny]
@@ -210,3 +222,41 @@ class TestAuthenticationView(GenericAPIView):
             'msg':'ça fonctionne!'
         }
         return Response(data, status=status.HTTP_200_OK)
+    
+class GoogleSignInView(GenericAPIView):
+
+    serializer_class = GoogleSignInSerializer
+    authentication_classes = []  # si tu veux désactiver l’auth obligatoire
+    permission_classes = [AllowAny]
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Le validated_data contient déjà le dict avec access_token, refresh_token, etc.
+        data = serializer.validated_data
+
+        return Response(data, status=status.HTTP_200_OK)
+    
+class ResendOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email")
+        
+        # Validation de l'email requis
+        if not email:
+            return Response({"message": "L'email est requis."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Vérification de l'existence de l'utilisateur par son email
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"message": "Aucun utilisateur trouvé avec cet email."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Génération d'un nouveau code OTP et assignation à l'utilisateur
+        new_code = assign_otp_to_user(user)
+
+        # Envoi du code OTP par email
+        send_otp_email(user, new_code)
+
+        return Response({"message": "Un nouveau code OTP a été envoyé à votre adresse email."}, status=status.HTTP_200_OK)

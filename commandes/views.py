@@ -16,7 +16,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
 class CreateOrderView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request):
+    def get(self, request):
         user = request.user
         panier_items = Panier.objects.filter(user=user)
 

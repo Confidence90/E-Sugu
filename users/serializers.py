@@ -9,18 +9,19 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_str, smart_bytes
 from django.contrib.sites.shortcuts import get_current_site
 from django.urls import reverse
-from .utils import send_normal_email
+from .utils import send_normal_email, Google, register_social_user
+from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 
 
 class UserSerializer(serializers.ModelSerializer):
-    phone_full = serializers.CharField(write_only=True, required=False)
-    password2=serializers.CharField(max_length=128, min_length=8, write_only=True)
-
+    password2 = serializers.CharField(max_length=128, min_length=8, write_only=True)
+    
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'country_code', 'phone', 'phone_full', 'password','password2', 'location', 'is_seller']
+        fields = ['id', 'username', 'email', 'country_code', 'phone', 'password', 'password2', 'location', 'is_seller']
         extra_kwargs = {
+            'username': {'required': False},
             'password': {'write_only': True},
             'id': {'read_only': True},
         }
@@ -33,7 +34,6 @@ class UserSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Cet email est déjà utilisé.")
         return value
 
-
     def validate_phone(self, value):
         if not value.isdigit() or len(value) < 8:
             raise serializers.ValidationError("Le numéro de téléphone doit contenir au moins 8 chiffres.")
@@ -42,26 +42,38 @@ class UserSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        phone_full = f"{attrs['country_code']}{attrs['phone']}"
-        password=attrs.get('password','')
-        password2=attrs.get('password2','')
-        if password !=password2:
-            raise serializers.ValidationError("Les mot de passe ne conrespondent pas.")
+        password = attrs.get('password', '')
+        password2 = attrs.get('password2', '')
+        if 'username' not in attrs:
+            attrs['username'] = attrs.get('email')
         
-    
+        if password != password2:
+            raise serializers.ValidationError("Les mots de passe ne correspondent pas.")
+        
+        # Validation de l'unicité du phone_full sans l'exposer dans les champs
+        phone_full = f"{attrs['country_code']}{attrs['phone']}"
         if User.objects.filter(phone_full=phone_full).exists():
-            raise serializers.ValidationError({"phone_full": "Ce numéro est déjà utilisé."})
-        attrs['phone_full'] = phone_full
+            raise serializers.ValidationError({"phone": "Ce numéro est déjà utilisé avec cet indicatif."})
+            
         return attrs
 
     def create(self, validated_data):
         try:
-            validated_data.pop('password2')  # On n'enregistre pas password2
-            password = validated_data.pop('password')  # On extrait password
-    
-            user = User(**validated_data)  # Création avec les autres champs
-            user.set_password(password)    # Hash sécurisé du mot de passe
+            # Suppression du champ password2
+            validated_data.pop('password2')
+            
+            # Extraction et hashage du mot de passe
+            password = validated_data.pop('password')
+            validated_data['is_verified'] = False
+            validated_data['is_seller_pending'] = False
+            # Création du phone_full avant la création de l'utilisateur
+            validated_data['phone_full'] = f"{validated_data['country_code']}{validated_data['phone']}"
+            
+            # Création de l'utilisateur
+            user = User(**validated_data)
+            user.set_password(password)
             user.save()
+            
             return user
         except Exception as e:
             raise serializers.ValidationError(f"Erreur lors de la création de l'utilisateur : {str(e)}")
@@ -88,8 +100,10 @@ class LoginSerializer(serializers.Serializer):
         refresh = RefreshToken.for_user(user)
 
         return {
+            "user": user,
             'email': user.email,
-            'full_name': user.get_full_name,
+            'full_name': f"{user.first_name} {user.last_name}".strip() or user.username,
+
             'access_token': str(refresh.access_token),
             'refresh_token': str(refresh),
         }
@@ -97,9 +111,10 @@ class LoginSerializer(serializers.Serializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'country_code', 'phone', 'location', 'is_seller', 'created_at']
+        fields = ['id', 'first_name', 'last_name', 'email', 'country_code', 'phone', 'location', 'is_seller', 'created_at','avatar']
         extra_kwargs = {
             'id': {'read_only': True},
+            'email': {'read_only': True},
             'created_at': {'read_only': True},
         }
 #Nouveau
@@ -188,6 +203,7 @@ class RequestResetPasswordAPISerializer(serializers.Serializer):
     
 
 class LogoutSerializer(serializers.Serializer):
+
     refresh_token = serializers.CharField()
 
     default_error_messages = {
@@ -204,3 +220,23 @@ class LogoutSerializer(serializers.Serializer):
             token.blacklist()
         except TokenError:
             self.fail('bad_token')
+
+class GoogleSignInSerializer(serializers.Serializer):
+    access_token = serializers.CharField(min_length=6)
+
+    def validate_access_token(self, access_token):
+        google_user_data = Google.validate(access_token)
+        
+        if not isinstance(google_user_data, dict):
+            raise serializers.ValidationError("Le token est invalide ou expiré")
+
+        if google_user_data['aud'] != settings.GOOGLE_CLIENT_ID:
+            raise AuthenticationFailed(detail="Impossible de vérifier l'utilisateur") 
+
+        email = google_user_data['email']
+        first_name = google_user_data.get('given_name', '')
+        last_name = google_user_data.get('family_name', '')
+        provider = "google"
+
+        return register_social_user(provider, email, first_name, last_name)
+     

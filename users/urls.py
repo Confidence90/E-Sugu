@@ -11,6 +11,8 @@ from .views import (
     ConfirmResetPasswordWithOTPAPIView,
     TestAuthenticationView,
     SetNewPassword,
+    GoogleSignInView,
+    ResendOTPView
 )
 
 urlpatterns = [
@@ -20,9 +22,11 @@ urlpatterns = [
     path('logout/', LogoutView.as_view(), name='logout'),
     path('refresh-token/', RefreshTokenView.as_view(), name='refresh-token'),
     path('password-reset/', RequestResetPasswordAPIView.as_view(), name='password-reset'),
-    path('password-reset/confirm/', ConfirmResetPasswordLinkAPIView.as_view(), name='confirm-password-otp'),
+    path('password-reset/confirm/', ConfirmResetPasswordWithOTPAPIView.as_view(), name='confirm-password'),
     path('password-reset-confirm/<uidb64>/<token>', ConfirmResetPasswordLinkAPIView.as_view(), name='password-reset-confirm'),
     path('set-new-password/', SetNewPassword.as_view(), name='set-new-password'),
     path('profile/', ProfileView.as_view(), name='profile'),
+    path('google/', RegisterView.as_view(), name='google'),
     path('me/', TestAuthenticationView.as_view(), name='granted'),
+    path('resend-otp/', ResendOTPView.as_view(), name='resend-otp'),
 ]
