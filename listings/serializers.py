@@ -1,5 +1,7 @@
+# listings/serializers.py
 from rest_framework import serializers
 from .models import Listing, Image
+from categories.models import Category
 
 class ImageSerializer(serializers.ModelSerializer):
     class Meta:
@@ -13,13 +15,16 @@ class ListingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Listing
-        fields = [
-            'id', 'title', 'description', 'price', 'type', 'condition', 'status',
-            'location', 'category', 'category_name', 'user', 'images',
-            'created_at', 'updated_at'
-        ]
+        fields = '__all__'
+    def validate_category(self, value):
+        if not Category.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError("Catégorie non trouvée.")
+        return value
 
 class ListingCreateSerializer(serializers.ModelSerializer):
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.all()
+    )
     images = serializers.ListField(
         child=serializers.ImageField(),
         write_only=True,
@@ -30,7 +35,7 @@ class ListingCreateSerializer(serializers.ModelSerializer):
         model = Listing
         fields = [
             'title', 'description', 'price', 'type', 'condition', 'location',
-            'category', 'images'
+            'category', 'images', 'is_featured'
         ]
 
     def create(self, validated_data):
@@ -39,6 +44,12 @@ class ListingCreateSerializer(serializers.ModelSerializer):
         for image in images:
             Image.objects.create(listing=listing, image=image)
         return listing
+    def validate_category(self, value):
+        if not Category.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError("Catégorie invalide ou inexistante.")
+        return value
+
+
 class ImageUploadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Image

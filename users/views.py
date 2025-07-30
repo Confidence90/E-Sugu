@@ -1,66 +1,99 @@
 from rest_framework.views import APIView
+from google.auth.transport import requests
+from google.oauth2 import id_token
 from django.utils.http import urlsafe_base64_decode
 from django.utils.encoding import smart_str, DjangoUnicodeDecodeError
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
+from allauth.socialaccount.providers.oauth2.client import OAuth2Client
+from dj_rest_auth.registration.views import SocialLoginView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.generics import GenericAPIView
 from django.conf import settings
+from django.shortcuts import redirect
+from allauth.socialaccount.providers.oauth2.views import OAuth2CallbackView
+from allauth.socialaccount.providers.facebook.views import FacebookOAuth2Adapter
+from allauth.socialaccount.providers.apple.views import AppleOAuth2Adapter
+from allauth.socialaccount.providers.oauth2.client import OAuth2Error
 from rest_framework import serializers
 from .utils import assign_otp_to_user, send_otp_email, verify_otp
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import User, OneTimePassword
 from .serializers import (UserSerializer,LoginSerializer, 
 UserProfileSerializer,SetNewPasswordSerializer,
-RequestResetPasswordAPISerializer,LogoutSerializer,
-GoogleSignInSerializer)
-
+RequestResetPasswordAPISerializer,LogoutSerializer)
+from rest_framework.throttling import AnonRateThrottle
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth import get_user_model
+import logging
+logger = logging.getLogger(__name__)
 # 🚀 Créer un compte utilisateur
+#@csrf_exempt
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        print("Données reçues:", request.data) 
-        serializer = UserSerializer(data=request.data)
+        data = request.data
+        is_google_signup = data.get('is_google', False)
+
+        serializer = UserSerializer(data=data)
+        logger.debug("Données reçus: %s", data)
         if serializer.is_valid():
             user = serializer.save()
 
-            try:
-                code = assign_otp_to_user(user)
-                send_otp_email(user, code)
-            except Exception as e:
-                user.delete()
-                return Response(
-                    {'error': f"Échec d'envoi du code OTP. Détail : {str(e)}"},
-                    status=500
-                )
-
+            # Marquage spécifique au vendeur
             if user.is_seller:
-                user.is_seller_pending = True  # Assure-toi que ce champ existe dans ton modèle
+                user.is_seller_pending = True
+                user.save()
 
-            
+            if is_google_signup:
+                # Inscription Google : bypass OTP
+                user.is_verified = True
+                user.save()
+                refresh = RefreshToken.for_user(user)
+                return Response({
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                    "message": "Inscription via Google réussie ✅"
+                }, status=status.HTTP_201_CREATED)
 
-            return Response({
-                'user_id': user.id,
-                'message': 'Code OTP envoyé pour vérification'
-            }, status=status.HTTP_201_CREATED)
+            else:
+                # Inscription classique : OTP requis
+                try:
+                    otp_code = assign_otp_to_user(user)
+                    send_otp_email(user, otp_code)
+                except Exception as e:
+                    logger.exception("Erreur lors de l’envoi OTP pour l’utilisateur %s", user.email)
+                    user.delete()
+                    return Response({
+                        "error": f"Échec d'envoi du code OTP : {str(e)}"
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+                return Response({
+                    "user_id": user.id,
+                    "message": "Inscription réussie. Vérifiez votre boîte email pour l’OTP ✉️"
+                }, status=status.HTTP_201_CREATED)
         else:
-            print("Erreurs de validation:", serializer.errors)
+            logger.error("Erreur de validation: %s", serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ✅ Vérifier le code OTP
+#@csrf_exempt
 class VerifyUserOTP(GenericAPIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         otpcode = request.data.get('otp')
         email = request.data.get('email')
+        logger.debug("Vérification OTP pour email: %s, code: %s", email, otpcode)
         if not otpcode:
             return Response({'message': 'Code OTP requis'}, status=status.HTTP_400_BAD_REQUEST)
-
+        if not email:
+            return Response({'message': 'Email requis'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             otp_obj = OneTimePassword.objects.get(code=otpcode, user__email=email)
             user = otp_obj.user
@@ -70,41 +103,61 @@ class VerifyUserOTP(GenericAPIView):
             if is_valid:
                 user.is_active = True
                 user.save()
+                otp_obj.delete()
                 return Response({'message': 'Email vérifié avec succès.'}, status=status.HTTP_200_OK)
 
             return Response({'message': message}, status=status.HTTP_400_BAD_REQUEST)
-
+     
         except OneTimePassword.DoesNotExist:
             return Response({'message': 'Code invalide ou expiré.'}, status=status.HTTP_404_NOT_FOUND)
+        
 
 
 # 🔐 Login
+#@csrf_exempt
 class LoginView(GenericAPIView):
     serializer_class = LoginSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [AnonRateThrottle]  # Protection contre les attaques brute force
 
     def post(self, request):
+        logger.debug("Requête de connexion: %s ",  request.data)
         serializer = self.serializer_class(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-
-        data = serializer.validated_data  # ✅ C'est ici qu'on récupère les données validées
-        user = data.get("user")
-        return Response({
-            "access": data["access_token"],
-            "refresh": data["refresh_token"],
-            "id": user.id,  # ou data.get("id") si tu veux vraiment inclure l'id ici
-            "email": data["email"],
-            'full_name': f"{user.first_name} {user.last_name}".strip() or user.username
-
-        }, status=status.HTTP_200_OK)
+        
+        try:
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            user = data["user"]
+            
+            # Log de la connexion réussie
+            logger.info(f"User {user.email} logged in successfully", extra={
+                'user_id': user.id,
+                'ip': request.META.get('REMOTE_ADDR')
+            })
+            
+            return Response({
+                "access": data["access_token"],
+                "refresh": data["refresh_token"],
+                "email": data["email"],
+                'full_name': data["full_name"]
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            # Log des échecs de connexion
+            logger.warning(f"Login failed for email {request.data.get('email')}: {str(e)}", extra={
+                'ip': request.META.get('REMOTE_ADDR')
+            })
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # 🚪 Logout
+
 class LogoutView(GenericAPIView):
     serializer_class=LogoutSerializer
     permission_classes=[IsAuthenticated]
 
     def post(self, request):
+        logger.info(f"Déconnexion pour {request.user.email}", extra={'user_id': request.user.id})
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -113,15 +166,17 @@ class LogoutView(GenericAPIView):
 
 
 # 🔁 Rafraîchir le token
+#@csrf_exempt
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        logger.debug("Requête de rafraîchissement: %s", request.data)
         try:
             refresh_token = request.data.get('refresh_token')
             refresh = RefreshToken(refresh_token)
             return Response({
-                'token': str(refresh.access_token),
+                'access_token': str(refresh.access_token),
                 'refresh_token': str(refresh)
             }, status=status.HTTP_200_OK)
         except Exception:
@@ -129,6 +184,7 @@ class RefreshTokenView(APIView):
 
 
 # 👤 Consulter & modifier son profil
+#@csrf_exempt
 class ProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -137,6 +193,7 @@ class ProfileView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def put(self, request):
+        logger.info(f"Mise à jour profil pour {request.user.email}", extra={'user_id': request.user.id})
         serializer = UserProfileSerializer(request.user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -145,11 +202,13 @@ class ProfileView(APIView):
 
 
 # 🔑 Réinitialisation du mot de passe (demande OTP)
+#@csrf_exempt
 class RequestResetPasswordAPIView(GenericAPIView):
     serializer_class = RequestResetPasswordAPISerializer
     permission_classes = [AllowAny]
 
     def post(self, request):
+        logger.debug("Requête de réinitialisation: %s", request.data)
         serializer = self.get_serializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         return Response(
@@ -159,8 +218,10 @@ class RequestResetPasswordAPIView(GenericAPIView):
 
 
 # 🔒 Réinitialisation du mot de passe (confirmer)
+#@csrf_exempt
 class ConfirmResetPasswordWithOTPAPIView(GenericAPIView):
     def post(self, request):
+        logger.debug("Réinitialisation OTP: %s", request.data)
         identifier = request.data.get('identifier')
         otp_code = request.data.get('otp_code')
         new_password = request.data.get('new_password')
@@ -179,9 +240,10 @@ class ConfirmResetPasswordWithOTPAPIView(GenericAPIView):
 
         user.set_password(new_password)
         user.save()
+        OneTimePassword.objects.filter(user=user, code=otp_code).delete()
         return Response({'message': 'Mot de passe réinitialisé avec succès.'}, status=200)
     
-
+#@csrf_exempt
 class ConfirmResetPasswordLinkAPIView(GenericAPIView):
     def get(self, request, uidb64, token):
         try:
@@ -204,16 +266,18 @@ class ConfirmResetPasswordLinkAPIView(GenericAPIView):
 
 # 3. Réinitialisation depuis lien web (POST avec n
 # ouveau mot de passe)
+#@csrf_exempt
 class SetNewPassword(GenericAPIView):
     serializer_class = SetNewPasswordSerializer
     permission_classes = [AllowAny]
 
     def patch(self, request):
+        logger.info("Réinitialisation de mot de passe", extra={'data': request.data})
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({'message': 'Mot de passe modifié avec succès 👍'}, status=status.HTTP_200_OK)
-
+#@csrf_exempt
 class TestAuthenticationView(GenericAPIView):
     permission_classes = [IsAuthenticated]
 
@@ -223,20 +287,61 @@ class TestAuthenticationView(GenericAPIView):
         }
         return Response(data, status=status.HTTP_200_OK)
     
-class GoogleSignInView(GenericAPIView):
+logger = logging.getLogger(__name__)
+User = get_user_model()
 
-    serializer_class = GoogleSignInSerializer
-    authentication_classes = []  # si tu veux désactiver l’auth obligatoire
-    permission_classes = [AllowAny]
-    def post(self, request):
-        serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        # Le validated_data contient déjà le dict avec access_token, refresh_token, etc.
-        data = serializer.validated_data
-
-        return Response(data, status=status.HTTP_200_OK)
-    
+#@csrf_exempt
+class GoogleLoginView(APIView):
+    def post(self, request, *args, **kwargs):
+        logger.debug("Requête reçue: %s", request.data)
+        id_token_str = request.data.get('id_token')
+        if not id_token_str:
+            logger.error("id_token manquant")
+            return Response({'error': 'id_token requis'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Valider l'ID token avec Google
+            id_info = id_token.verify_oauth2_token(
+                id_token_str, requests.Request(), settings.GOOGLE_CLIENT_ID
+            )
+            logger.debug("ID token info: %s", id_info)
+            
+            # Vérifier l'émetteur et l'audience
+            if id_info['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
+                return Response({'error': 'Émetteur de jeton non valide'}, status=status.HTTP_400_BAD_REQUEST)
+            if id_info['aud'] != settings.GOOGLE_CLIENT_ID:
+                return Response({'error': 'Discordance d\'audience'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Récupérer ou créer l'utilisateur
+            email = id_info['email']
+            user, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    'first_name': id_info.get('given_name', ''),
+                    'last_name': id_info.get('family_name', ''),
+                    'username': email,
+                    'is_verified': True,
+                    'auth_provider': 'google'
+                }
+            )
+            if not created:
+                user.auth_provider = 'google'
+                user.is_verified = True
+                user.save()
+            
+            # Générer les tokens JWT
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'email': email,
+                'user': UserSerializer(user).data
+            }, status=status.HTTP_200_OK)
+        
+        except ValueError as e:
+            logger.error("Erreur de validation de l'ID token: %s", str(e))
+            return Response({'error': f'Jeton invalide: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+#@csrf_exempt 
 class ResendOTPView(APIView):
     permission_classes = [AllowAny]
 
@@ -260,3 +365,103 @@ class ResendOTPView(APIView):
         send_otp_email(user, new_code)
 
         return Response({"message": "Un nouveau code OTP a été envoyé à votre adresse email."}, status=status.HTTP_200_OK)
+    
+
+#@csrf_exempt
+class CustomGoogleCallbackView(OAuth2CallbackView):
+    adapter_class = GoogleOAuth2Adapter
+
+    def dispatch(self, request, *args, **kwargs):
+        logger.debug("Received callback request: %s", request.GET)
+        try:
+            response = super().dispatch(request, *args, **kwargs)
+            user = request.user
+            if user.is_authenticated:
+                user.auth_provider = 'google'
+                user.is_verified = True
+                user.save()
+
+                refresh = RefreshToken.for_user(user)
+                redirect_url = (
+                    f'http://localhost:5173/auth/callback?'
+                    f'access_token={str(refresh.access_token)}&'
+                    f'refresh_token={str(refresh)}&'
+                    f'email={user.email}'  # Ajouter l'email
+                )
+                logger.debug("Redirecting to: %s", redirect_url)
+                return redirect(redirect_url)
+            return response
+        except Exception as e:
+            logger.error("Error in CustomGoogleCallbackView: %s", str(e))
+            return Response({'error': f'Erreur lors du callback: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class FacebookLoginView(APIView):
+    def post(self, request, *args, **kwargs):
+        logger.debug("Requête reçue: %s", request.data)
+        access_token = request.data.get('access_token')
+        if not access_token:
+            logger.error("access_token manquant")
+            return Response({'error': 'access_token requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            adapter = FacebookOAuth2Adapter(request)
+            app = adapter.get_provider().get_app(request)
+            token = adapter.parse_token({'access_token': access_token})
+            token.app = app
+            login = adapter.complete_login(request, app, token, response=token)
+            login.token = token
+
+            user = login.user
+            user.auth_provider = 'facebook'
+            user.is_verified = True
+            user.save()
+
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'email': user.email,
+                'user': UserSerializer(user).data
+            }, status=status.HTTP_200_OK)
+        except OAuth2Error as e:
+            logger.error("Erreur Facebook OAuth: %s", str(e))
+            return Response({'error': f'Erreur de connexion Facebook: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AppleLoginView(APIView):
+    def post(self, request, *args, **kwargs):
+        logger.debug("Requête reçue: %s", request.data)
+        id_token = request.data.get('id_token')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        if not id_token:
+            logger.error("id_token manquant")
+            return Response({'error': 'id_token requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            adapter = AppleOAuth2Adapter(request)
+            app = adapter.get_provider().get_app(request)
+            token = adapter.parse_token({'id_token': id_token})
+            token.app = app
+            login = adapter.complete_login(request, app, token, response=token)
+            login.token = token
+
+            user = login.user
+            if first_name and last_name:
+                user.first_name = first_name
+                user.last_name = last_name
+            user.auth_provider = 'apple'
+            user.is_verified = True
+            user.save()
+
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'email': user.email,
+                'user': UserSerializer(user).data
+            }, status=status.HTTP_200_OK)
+        except OAuth2Error as e:
+            logger.error("Erreur Apple OAuth: %s", str(e))
+            return Response({'error': f'Erreur de connexion Apple: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)

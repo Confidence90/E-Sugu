@@ -9,7 +9,17 @@ from datetime import timedelta
 
 # Build paths
 BASE_DIR = Path(__file__).resolve().parent.parent
-
+REST_AUTH = {
+    'REGISTER_SERIALIZER': 'dj_rest_auth.registration.serializers.RegisterSerializer',
+    'SIGNUP_FIELDS': {
+        'username': {
+            'required': False,  # Set to True if username is required
+        },
+        'email': {
+            'required': True,  # Email is required for registration
+        },
+    },
+}
 # Security
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-for-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
@@ -23,6 +33,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     
     # Third-party apps
     'rest_framework',
@@ -63,13 +74,18 @@ MIDDLEWARE = [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    #'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
 ]
 
+AUTHENTICATION_BACKENDS=[
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+SITE_ID = 1
 ROOT_URLCONF = 'e_sugu.urls'
 
 TEMPLATES = [
@@ -196,15 +212,16 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS=True
 CORS_ALLOWED_ORIGINS = [
     
-    "http://localhost:3000",
+    
     "http://localhost:5173",  # Si vous utilisez Vite
     "http://127.0.0.1:8000",
 ]
-CSRF_TRUSTED_ORIGINs=[
-    "http://localhost:3000"
-    "http://localhost:5173/"
-]
-CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_CREDENTIALS = False
+CSRF_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_HTTPONLY = True
 
 # Twilio (OTP) - Désactivé pour l'instant
 # TWILIO_ACCOUNT_SID = config('TWILIO_ACCOUNT_SID', default='')
@@ -241,11 +258,14 @@ EMAIL_PORT = config('EMAIL_PORT', cast=int)
 EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+EMAIL_BACKEND = config('EMAIL_BACKEND')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
 
 
-VITE_GOOGLE_CLIENT_ID = os.environ.get('VITE_GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
-SOCIAL_AUTH_PASSWORD=os.environ.get('SOCIAL_PASSWORD')
+GOOGLE_CLIENT_ID = config('GOOGLE_CLIENT_ID')
+SOCIAL_AUTH_PASSWORD = config('SOCIAL_AUTH_PASSWORD')
 
 REST_USE_JWT = True
 REST_AUTH_TOKEN_MODEL = None
@@ -262,3 +282,10 @@ LOGGING = {
         'level': 'DEBUG',
     },
 }
+SECURE_CROSS_ORIGIN_OPENER_POLICY = None  # Disable COOP for development
+LOGIN_REDIRECT_URL='http://localhost:5173/auth/google/callback/'
+ACCOUNT_EMAIL_VERIFICATION='none'
+ACCOUNT_AUTHENTICATION='email'
+ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*', 'password1*', 'password2*']
+SOCIALACCOUNT_LOGIN_ON_GET= True
+REST_USE_JWT = True

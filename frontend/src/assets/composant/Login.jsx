@@ -8,7 +8,7 @@ import axios from 'axios';
 const Login = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-
+  const [lastRequestTime, setLastRequestTime] = useState(0);
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -46,7 +46,8 @@ const Login = () => {
           JSON.stringify({
             id: res.data.id,
             email: res.data.email,
-            names: res.data.full_name,
+            names: res.data.full_name || `${res.data.first_name} ${res.data.last_name}`,
+
           })
         );
         toast.success('Connexion avec Google réussie !');
@@ -106,16 +107,38 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const { email, password } = loginData;
 
+    const now = Date.now();
+    if (now - lastRequestTime < 2000) {
+    setError('Veuillez patienter avant de réessayer');
+    return;
+    }
+    setLastRequestTime(now);
+
+    
+   const { email, password } = loginData;
+  
+    // Validation des champs
     if (!email || !password) {
       setError('Veuillez remplir tous les champs obligatoires');
-      return;
+    return;
     }
+
+    
+
+    
+    
+    
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       setFieldErrors((prev) => ({ ...prev, email: 'Email invalide' }));
+      return;
+    }
+  // Validation du mot de passe
+
+    if (password.length < 8) {
+      setFieldErrors({ password: 'Le mot de passe doit contenir au moins 8 caractères' });
       return;
     }
 
@@ -124,7 +147,15 @@ const Login = () => {
     setFieldErrors({});
 
     try {
-      const res = await axios.post('http://localhost:8000/api/users/login/', loginData);
+      const res = await axios.post(
+       'http://localhost:8000/api/users/login/',
+         loginData, // 🟢 les données de connexion
+     {
+        headers: {
+        'Content-Type': 'application/json'
+    }
+    }
+    );
 
       const user = {
       id: res.data.id,
@@ -132,7 +163,7 @@ const Login = () => {
       full_name: res.data.full_name,
     };
 
-      const storage = localStorage;
+     const storage = rememberMe ? localStorage : sessionStorage;
 
       
       storage.setItem('access_token', res.data.access);
@@ -148,8 +179,8 @@ const Login = () => {
         if (status === 400) {
           if (data.errors) {
             setFieldErrors(data.errors);
-          } else if (data.email) {
-            setFieldErrors((prev) => ({ ...prev, email: data.email }));
+          } else if (typeof data === 'string' && data.includes('Email ou mot de passe incorrect')) {
+          setError('Email ou mot de passe incorrect');
           } else if (data.password) {
             setFieldErrors((prev) => ({ ...prev, password: data.password }));
           } else if (data.message) {
@@ -161,7 +192,10 @@ const Login = () => {
           setError('Email ou mot de passe incorrect');
         } else if (status === 403) {
           setError('Compte non activé. Vérifiez vos emails.');
-        } else {
+        } else if (status === 429) {
+           setError('Trop de tentatives. Veuillez patienter.');
+        }
+        else {
           setError('Une erreur est survenue lors de la connexion.');
         }
       } else if (error.request) {

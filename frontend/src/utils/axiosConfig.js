@@ -5,6 +5,18 @@ import { toast } from 'react-toastify';
 
 const baseURL = 'http://localhost:8000';
 
+axios.defaults.withCredentials = true; // Activer les cookies pour toutes les requêtes
+axios.defaults.xsrfCookieName = 'csrftoken';
+axios.defaults.xsrfHeaderName = 'X-CSRFToken';
+const axiosInstance = axios.create({
+  baseURL: "http://localhost:8000/api",
+  withCredentials: true, // 👈 important pour inclure les cookies (dont CSRF)
+});
+axiosInstance.post("/users/register/", data)
+  .then(response => console.log(response))
+  .catch(error => console.error(error));
+
+
 // Initialisation
 let accessToken = localStorage.getItem('access_token');
 let refreshToken = localStorage.getItem('refresh_token');
@@ -90,4 +102,4 @@ api.interceptors.response.use(
   }
 );
 
-export default api;
+export default axiosInstance;

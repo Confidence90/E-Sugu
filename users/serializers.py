@@ -2,6 +2,8 @@
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from .models import User
+
+
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -9,9 +11,12 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_str, smart_bytes
 from django.contrib.sites.shortcuts import get_current_site
 from django.urls import reverse
-from .utils import send_normal_email, Google, register_social_user
+from .utils import send_normal_email
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
+import time
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -19,10 +24,13 @@ class UserSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'country_code', 'phone', 'password', 'password2', 'location', 'is_seller']
+        fields = ['id','first_name','last_name', 'username', 'email', 'country_code', 'phone', 'password', 'password2', 'location', 'is_seller']
         extra_kwargs = {
-            'username': {'required': False},
-            'password': {'write_only': True},
+            'password': {'write_only': True, 'required': True},
+            'first_name': {'required': True, 'allow_blank': False},
+            'last_name': {'required': True, 'allow_blank': False},
+            'email': {'required': True, 'allow_blank': False},
+            'phone': {'required': True, 'allow_blank': False},
             'id': {'read_only': True},
         }
 
@@ -79,44 +87,61 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Erreur lors de la création de l'utilisateur : {str(e)}")
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField(max_length=255, min_length=6)
-    password = serializers.CharField(max_length=128, write_only=True)
+    email = serializers.CharField(max_length=255)
+    password = serializers.CharField(max_length=128, write_only=True, trim_whitespace=False)
     full_name = serializers.CharField(max_length=255, read_only=True)
     access_token = serializers.CharField(max_length=255, read_only=True)
     refresh_token = serializers.CharField(max_length=255, read_only=True)
 
     def validate(self, attrs):
-        email = attrs.get('email')
+        # Normalisation de l'email
+        try:
+            email = attrs['email'].lower().strip()
+            validate_email(email)
+        except (KeyError, ValidationError):
+            time.sleep(2)  # Délai pour les emails invalides
+            raise serializers.ValidationError("Email invalide")
+            
         password = attrs.get('password')
         request = self.context.get('request')
 
+        # Authentification
         user = authenticate(request, email=email, password=password)
-
+        
         if not user:
+            time.sleep(2)  # Délai pour les échecs d'authentification
             raise serializers.ValidationError("Email ou mot de passe incorrect.")
+            
         if not user.is_active:
             raise serializers.ValidationError("Le compte est désactivé.")
 
+        # Génération des tokens
         refresh = RefreshToken.for_user(user)
+        
+        # Ajout de claims personnalisés si nécessaire
+        refresh['email'] = user.email
+        refresh['full_name'] = f"{user.first_name} {user.last_name}".strip() or user.username
 
         return {
             "user": user,
-            'email': user.email,
-            'full_name': f"{user.first_name} {user.last_name}".strip() or user.username,
-
-            'access_token': str(refresh.access_token),
-            'refresh_token': str(refresh),
+            "email": user.email,
+            "full_name": f"{user.first_name} {user.last_name}".strip() or user.username,
+            "access_token": str(refresh.access_token),
+            "refresh_token": str(refresh),
         }
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
     class Meta:
         model = User
-        fields = ['id', 'first_name', 'last_name', 'email', 'country_code', 'phone', 'location', 'is_seller', 'created_at','avatar']
+        fields = ['id','full_name', 'first_name', 'last_name', 'email', 'country_code', 'phone', 'location', 'is_seller', 'created_at','avatar']
         extra_kwargs = {
             'id': {'read_only': True},
             'email': {'read_only': True},
             'created_at': {'read_only': True},
         }
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()
 #Nouveau
 class SetNewPasswordSerializer(serializers.Serializer):
     password = serializers.CharField(max_length=100, min_length=6, write_only=True)
@@ -221,22 +246,3 @@ class LogoutSerializer(serializers.Serializer):
         except TokenError:
             self.fail('bad_token')
 
-class GoogleSignInSerializer(serializers.Serializer):
-    access_token = serializers.CharField(min_length=6)
-
-    def validate_access_token(self, access_token):
-        google_user_data = Google.validate(access_token)
-        
-        if not isinstance(google_user_data, dict):
-            raise serializers.ValidationError("Le token est invalide ou expiré")
-
-        if google_user_data['aud'] != settings.GOOGLE_CLIENT_ID:
-            raise AuthenticationFailed(detail="Impossible de vérifier l'utilisateur") 
-
-        email = google_user_data['email']
-        first_name = google_user_data.get('given_name', '')
-        last_name = google_user_data.get('family_name', '')
-        provider = "google"
-
-        return register_social_user(provider, email, first_name, last_name)
-     

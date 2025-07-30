@@ -10,7 +10,7 @@ const Profile = () => {
   const [user, setUser] = useState(null);
   const [orders, setOrders] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [formData, setFormData] = useState({ full_name: '', avatar: '', email: '', phone: ''/*, birthday: ''*/ });
+  const [formData, setFormData] = useState({ full_name: '', first_name:'', last_name:'', avatar: '', email: '', phone: ''/*, birthday: ''*/ });
   const [file, setFile] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('profile');
@@ -64,6 +64,8 @@ const Profile = () => {
   try {
     const token = localStorage.getItem('access_token');
     if (!token) {
+      console.log("Profil reçu :", res.data);
+
       toast.error('Veuillez vous connecter');
       navigate('/login');
       return;
@@ -75,8 +77,9 @@ const Profile = () => {
         'Content-Type': 'application/json'
       }
     });
-
+    console.log('Profile API Response:', res.data);
     setUser(res.data);
+    console.log('User State:', res.data);
     setFormData({
       full_name: `${res.data.first_name || ''} ${res.data.last_name || ''}`.trim(),
       first_name: res.data.first_name || '',
@@ -88,8 +91,15 @@ const Profile = () => {
       country_code: res.data.country_code || '+223',
       location: res.data.location || ''
     });
+    if (!res.data.first_name && !res.data.last_name) {
+      toast.warn('Veuillez compléter votre prénom et nom dans le profil');
+    }
   } catch (err) {
-    console.error('Erreur profile:', err.response?.data || err.message);
+    console.log('FormData State:', {
+    full_name: `${res.data.first_name || ''} ${res.data.last_name || ''}`.trim(),
+    first_name: res.data.first_name || '',
+    last_name: res.data.last_name || ''
+    });
     if (err.response?.status !== 401) {
       toast.error('Erreur lors du chargement du profil');
     }
@@ -506,6 +516,16 @@ safeReduce(orders, (total, order) => total + (order.total_amount || 0), 0).toFix
         </div>
       </div>
       
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+          <input 
+            type="email" 
+            value={formData.email || 'Non défini'} 
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+            readOnly
+          />
+        </div>
       {/* ... autres champs ... */}
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -517,6 +537,7 @@ safeReduce(orders, (total, order) => total + (order.total_amount || 0), 0).toFix
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent"
             readOnly
           />
+        </div>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Localisation</label>

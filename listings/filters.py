@@ -10,7 +10,8 @@ class ListingFilter(django_filters.FilterSet):
     location = django_filters.CharFilter(field_name="location", lookup_expr="icontains")
     status = django_filters.ChoiceFilter(field_name="status", choices=[('active', 'Actif'), ('sold', 'Vendu'), ('expired', 'Expiré')])
     type = django_filters.ChoiceFilter(field_name="type", choices=[('sale', 'Vente'), ('rental', 'Location')])
+    is_featured = django_filters.BooleanFilter(field_name="is_featured")
 
     class Meta:
         model = Listing
-        fields = ['category', 'price_min', 'price_max', 'condition', 'location', 'status', 'type']
+        fields = ['category', 'price_min', 'price_max', 'condition', 'location', 'status', 'type', 'is_featured']

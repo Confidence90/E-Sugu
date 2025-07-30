@@ -4,6 +4,7 @@ import { ToastContainer } from "react-toastify";
 import 'react-toastify/dist/ReactToastify.css';
 import PrivateRoute from './assets/composant/PrivateRoute';
 
+
 import Profile from './assets/composant/Profile';
 import Signup from './assets/composant/Signup';
 import Login from './assets/composant/Login';
@@ -22,7 +23,7 @@ function App() {
           <Route path='/otp/verify' element={<VerifyEmail />} />
           <Route path='/forget-password' element={<PasswordResetRequest />} />
           <Route path='/password-reset-confirm/:uid/:token' element={<ResetPassword />} />
-
+           <Route path="/auth/callback" element={<Signup />} />
           {/* ✅ Route protégée */}
           <Route path='/profile' element={
             <PrivateRoute>

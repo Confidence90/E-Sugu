@@ -1,7 +1,8 @@
+# listings/models.py
 from django.db import models
 from users.models import User
 from categories.models import Category
-
+import random
 
 class Listing(models.Model):
     TYPE_CHOICES = [
@@ -20,9 +21,9 @@ class Listing(models.Model):
         ('expired', 'Expiré'),
     ]
 
-    title = models.CharField(max_length=255)
+    title = models.CharField('Titre',max_length=255)
     description = models.TextField()
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    price = models.DecimalField('Prix', max_digits=10, decimal_places=2)
     type = models.CharField(max_length=10, choices=TYPE_CHOICES, default='sale')
     condition = models.CharField(max_length=10, choices=CONDITION_CHOICES)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
@@ -38,8 +39,11 @@ class Listing(models.Model):
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        related_name='listings'
+        related_name='listings',
+        verbose_name='Utilisateur'
     )
+
+    is_featured = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -59,7 +63,6 @@ class Listing(models.Model):
     def deactivate(self):
         self.status = 'expired'
         self.save()
-
 
 class Image(models.Model):
     listing = models.ForeignKey(
