@@ -1,6 +1,6 @@
 ### URLs d'accès
-- **API Base**: `http://localhost:3000`
-- **Interface Web**: `http://localhost:3000` (pour visualiser les données)
+- **API Base**: `http://localhost:8000`
+- **Interface Web**: `http://localhost:8000` (pour visualiser les données)
 
 # 🔐 AUTHENTIFICATION & UTILISATEUR
 - **Inscription & Connexion**
