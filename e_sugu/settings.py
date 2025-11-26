@@ -11,20 +11,13 @@ from datetime import timedelta
 BASE_DIR = Path(__file__).resolve().parent.parent
 REST_AUTH = {
     'REGISTER_SERIALIZER': 'dj_rest_auth.registration.serializers.RegisterSerializer',
-    'SIGNUP_FIELDS': {
-        'username': {
-            'required': False,  # Set to True if username is required
-        },
-        'email': {
-            'required': True,  # Email is required for registration
-        },
-    },
+    
 }
 # Security
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-for-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda v: [s.strip() for s in v.split(',')])
-
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,192.168.1.145', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = ['*']
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -42,6 +35,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'drf_spectacular',
     'django_filters',
+    'django_extensions',
     'rest_framework.authtoken',
 
     
@@ -70,9 +64,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
+    
     'django.middleware.common.CommonMiddleware',
     #'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -211,13 +206,39 @@ SIMPLE_JWT = {
 # CORS
 CORS_ALLOW_ALL_ORIGINS=True
 CORS_ALLOWED_ORIGINS = [
-    
-    
+    "http://localhost:3000",
+    "http://localhost:5174",
     "http://localhost:5173",  # Si vous utilisez Vite
     "http://127.0.0.1:8000",
+    "http://10.0.2.2:8000",
+    "http://localhost:5175",  # 🔥 AJOUTEZ VOTRE PORT
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
+]
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'cache-control',  # 🔥 AJOUTEZ CE HEADER
+]
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
 ]
 
-CORS_ALLOW_CREDENTIALS = False
+
+CORS_ALLOW_CREDENTIALS = True
 CSRF_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_HTTPONLY = True
@@ -230,8 +251,13 @@ SESSION_COOKIE_HTTPONLY = True
 # TWILIO_VERIFY_SERVICE_SID = config('TWILIO_VERIFY_SERVICE_SID', default='')
 
 # Stripe (Payments)
-STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
-STRIPE_PUBLISHABLE_KEY = config('STRIPE_PUBLISHABLE_KEY', default='')
+STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY')
+STRIPE_PUBLISHABLE_KEY = config('STRIPE_PUBLISHABLE_KEY')
+STRIPE_CURRENCY = 'xof'
+STRIPE_CONNECT_ENABLED = True
+STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
+STRIPE_SECRET_KEY="sk_test_51RGQ0tQPiTasEOUobtCvldqqCKe78sXdNvArOctS3wHqTEeQKuPQ0UynqnfYBfxjg8fmuFmAoE8zkVh8SpTwn0PP009nI7LbE9"
+STRIPE_PUBLISHABLE_KEY="pk_test_51RGQ0tQPiTasEOUoLzfyMSAFUH9UTCSSnna0ubGD8BvpMdx0iEMWFQvAwaTG9BklzfABbaoJK23bRn5cIhuLd0eo00UJ7az9t9"
 
 # Agora (Live Streaming)
 AGORA_APP_ID = config('AGORA_APP_ID', default='')
@@ -252,17 +278,17 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
 }
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
-EMAIL_HOST = config('EMAIL_HOST')
-EMAIL_PORT = config('EMAIL_PORT', cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-EMAIL_BACKEND = config('EMAIL_BACKEND')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
+EMAIL_BACKEND = config("EMAIL_BACKEND")
+EMAIL_HOST = config("EMAIL_HOST")
+EMAIL_PORT = config("EMAIL_PORT", cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL")
 
 
-GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+
+
 GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
 GOOGLE_CLIENT_ID = config('GOOGLE_CLIENT_ID')
 SOCIAL_AUTH_PASSWORD = config('SOCIAL_AUTH_PASSWORD')
@@ -286,6 +312,28 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY = None  # Disable COOP for development
 LOGIN_REDIRECT_URL='http://localhost:5173/auth/google/callback/'
 ACCOUNT_EMAIL_VERIFICATION='none'
 ACCOUNT_AUTHENTICATION='email'
-ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*', 'password1*', 'password2*']
+
 SOCIALACCOUNT_LOGIN_ON_GET= True
-REST_USE_JWT = True
+
+
+SOCIALACCOUNT_PROVIDERS = {
+    'facebook': {
+        'METHOD': 'oauth2',
+        'SCOPE': ['email', 'public_profile'],
+        'AUTH_PARAMS': {'auth_type': 'reauthenticate'},
+        'FIELDS': [
+            'id',
+            'email',
+            'name',
+            'first_name',
+            'last_name',
+            'picture'
+        ],
+        'EXCHANGE_TOKEN': True,
+        'VERIFIED_EMAIL': False,
+    }
+}
+
+# Variables Facebook (à mettre dans vos variables d'environnement)
+SOCIAL_AUTH_FACEBOOK_KEY = os.getenv('FACEBOOK_APP_ID', 'your_facebook_app_id')
+SOCIAL_AUTH_FACEBOOK_SECRET = os.getenv('FACEBOOK_APP_SECRET', 'your_facebook_app_secret')

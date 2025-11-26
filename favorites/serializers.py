@@ -8,7 +8,8 @@ from events.serializers import EventSerializer
 class FavoriteListingSerializer(serializers.ModelSerializer):
     listing = ListingSerializer(read_only=True)
     listing_id = serializers.IntegerField(write_only=True)
-
+    user = serializers.StringRelatedField(read_only=True)
+    
     class Meta:
         model = FavoriteListing
         fields = ['id', 'user', 'listing', 'listing_id']
@@ -33,12 +34,13 @@ class FavoriteEventSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'event', 'event_id']
         read_only_fields = ['user']
 
-    def validate_event_id(self, value):
-        if not Event.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Événement non trouvé.")
-        return value
 
-    def create(self, validated_data):
-        event_id = validated_data.pop('event_id')
-        event = Event.objects.get(id=event_id)
-        return FavoriteEvent.objects.create(user=self.context['request'].user, event=event)
+   # def validate_event_id(self, value):
+    #    if not Event.objects.filter(id=value).exists():
+    #        raise serializers.ValidationError("Événement non trouvé.")
+    #    return value
+
+    #def create(self, validated_data):
+    #    event_id = validated_data.pop('event_id')
+    #    event = Event.objects.get(id=event_id)
+    #    return FavoriteEvent.objects.create(user=self.context['request'].user, event=event)

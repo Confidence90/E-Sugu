@@ -7,7 +7,7 @@ from .models import Transaction, Revenue
 from .serializers import TransactionSerializer, RevenueSerializer
 from commandes.models import Order
 
-stripe.api_key = "your_stripe_secret_key"
+#stripe.api_key = "your_stripe_secret_key"
 
 class PaymentView(APIView):
     permission_classes = [IsAuthenticated]

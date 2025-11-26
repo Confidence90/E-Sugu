@@ -13,6 +13,13 @@ class UserManager(BaseUserManager):
             raise ValueError("Le numéro de téléphone est requis")
 
         email = self.normalize_email(email)
+        role = extra_fields.get('role', 'buyer')
+        if role == 'seller':
+            extra_fields.setdefault('is_seller', True)
+            extra_fields.setdefault('is_seller_pending', True)
+        else:
+            extra_fields.setdefault('is_seller', False)
+            extra_fields.setdefault('is_seller_pending', False)
         user = self.model(
         email=email,
         first_name=first_name,
@@ -28,6 +35,9 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
+        extra_fields.setdefault('role', 'admin')
+        extra_fields.setdefault('is_seller', False)
+        extra_fields.setdefault('is_seller_pending', False)
 
         if not extra_fields.get('is_staff'):
             raise ValueError('Le superutilisateur doit avoir is_staff=True.')
@@ -37,9 +47,7 @@ class UserManager(BaseUserManager):
         if self.model.objects.filter(phone=phone).exists():
             raise ValueError("Un utilisateur avec ce numéro existe déjà.")
 
-        user=self.create_user( email,first_name, last_name, phone, password=None, **extra_fields)
-
-        user.save()
+        user = self.create_user(email, first_name, last_name, phone, password=password, **extra_fields)
         return user
         
 

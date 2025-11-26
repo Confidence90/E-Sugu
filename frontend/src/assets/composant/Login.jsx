@@ -171,8 +171,9 @@ const Login = () => {
       storage.setItem('user', JSON.stringify(user));
 
       toast.success('Connexion réussie');
-      console.log("Navigation vers profile");
-      navigate('/profile');
+      console.log("Navigation vers Accueil");
+      window.dispatchEvent(new Event('authChange'));
+      navigate('/');
     } catch (error) {
       if (error.response) {
         const { status, data } = error.response;

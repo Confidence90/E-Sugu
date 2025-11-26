@@ -1,15 +1,21 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import CategoryViewSet, CategoryDetailWithChildrenAPIView
+from .views import (
+    CategoryViewSet,
+    CategoryDetailWithChildrenAPIView,
+    CategoryByNameAPIView  # 👈 Assure-toi qu'elle est importée
+)
 
-# Créer un routeur pour les routes automatiques du ViewSet
 router = DefaultRouter()
 router.register(r'', CategoryViewSet, basename='category')
 
-# Définir les URL
 urlpatterns = [
-    path('', include(router.urls)),
+    # 🔥 Cette route DOIT être avant le include(router)
+    path('categories/<str:name>/', CategoryByNameAPIView.as_view(), name='category-by-name'),
 
-    # Endpoint personnalisé pour récupérer une catégorie avec ses enfants
+    # Autres routes personnalisées
     path('categories/<int:pk>/with-children/', CategoryDetailWithChildrenAPIView.as_view(), name='category-with-children'),
+
+    # Routes du ViewSet
+    path('', include(router.urls)),
 ]

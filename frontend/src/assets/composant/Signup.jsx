@@ -24,6 +24,16 @@ const Signup = () => {
     is_seller: false,
   });
 
+  const CITY_CHOICES = [
+    "Bamako", "Sikasso", "Kayes", "Mopti", "Ségou", "Gao", 
+    "Tombouctou", "Kidal", "Koutiala", "San", "Kita", "Bougouni",
+    "Nioro du Sahel", "Nara", "Banamba", "Kolondiéba", "Yorosso",
+    "Bla", "Markala", "Bandiagara", "Diré", "Goundam", "Douentza",
+    "Ténenkou", "Macina", "Niono", "Ké-Macina", "Sokolo", "Yélimané",
+    "Diéma", "Kéniéba", "Bafoulabé", "Oussoubidiagna", "Kangaba",
+    "Kati", "Koulikoro", "Ménaka", "Ansongo", "Bourèm", "Tessalit"
+  ].sort();
+
   const [passwordStrength, setPasswordStrength] = useState({
     width: '0%',
     color: 'bg-gray-200',
@@ -555,15 +565,26 @@ const Signup = () => {
               <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-1">
                 Localisation (Ville)
               </label>
-              <input
-                type="text"
+
+              <select
+
                 id="location"
                 name="location"
                 value={location}
                 onChange={handleChange}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-200 transition duration-200"
-                placeholder="Bamako"
-              />
+
+                
+              >
+              <option value="">Sélectionnez une ville</option>
+              {CITY_CHOICES.map((city) => (
+                <option key={city} value={city}>
+
+                  {city}
+                </option>
+              ))}
+              </select>
+
               <div
                 className={`absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none transition duration-200 ${
                   location ? 'opacity-100' : 'opacity-0'

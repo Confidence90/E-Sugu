@@ -64,8 +64,8 @@ class PhoneTypeFilter(SimpleListFilter):
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
     ordering = ('email',)
-    list_display = ['id', 'email', 'username', 'is_active', 'is_staff']
-    search_fields = ['email', 'username', 'phone']
+    list_display = ['id','email', 'first_name', 'last_name', 'phone', 'is_staff', 'is_superuser']
+    search_fields = ['email', 'first_name', 'last_name', 'phone']
     list_filter = ['is_active', 'is_staff', 'is_superuser',PhoneTypeFilter,RoleFilter]
     readonly_fields = ['created_at']
     add_form = UserCreationForm
@@ -95,6 +95,7 @@ class UserAdmin(BaseUserAdmin):
     }),
     )
     actions = [ 'desactiver_utilisateurs', 'reinitialiser_mot_de_passe', 'demander_reinitialisation' ]
+    
 
 
     def get_fieldsets(self, request, obj=None):

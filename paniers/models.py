@@ -12,6 +12,12 @@ class Panier(models.Model):
 
     def total_price(self):
         return sum(item.total_price() for item in self.items.all())
+    def can_create_order(self):
+        """Vérifie si toutes les quantités dans le panier sont disponibles"""
+        for item in self.items.all():
+            if item.quantity > item.listing.available_quantity:
+                return False, f"Quantité insuffisante pour {item.listing.title}. Stock disponible: {item.listing.available_quantity}"
+        return True, ""
 
 
 class PanierItem(models.Model):
@@ -28,3 +34,10 @@ class PanierItem(models.Model):
 
     def total_price(self):
         return self.quantity * self.listing.price
+    def is_available(self):
+        """Vérifie si la quantité demandée est disponible"""
+        return self.quantity <= self.listing.available_quantity
+    
+    def get_available_quantity(self):
+        """Retourne la quantité maximale disponible"""
+        return min(self.quantity, self.listing.available_quantity)

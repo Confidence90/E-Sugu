@@ -3,6 +3,9 @@ from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from .models import Category
 from rest_framework import generics
+from rest_framework.views import APIView
+from rest_framework import status
+from rest_framework.response import Response
 from rest_framework.decorators import action
 from .serializers import CategorySerializer
 
@@ -28,3 +31,11 @@ class CategoryDetailWithChildrenAPIView(generics.RetrieveAPIView):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
     permission_classes = [AllowAny]
+class CategoryByNameAPIView(APIView):
+    def get(self, request, name):
+        try:
+            category = Category.objects.get(name__iexact=name)
+            serializer = CategorySerializer(category)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Category.DoesNotExist:
+            return Response({"detail": "Catégorie non trouvée."}, status=status.HTTP_404_NOT_FOUND)

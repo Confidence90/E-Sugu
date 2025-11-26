@@ -1,9 +1,10 @@
 # users/serializers.py
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
-from .models import User
-
-
+from .models import User, VendorProfile, Address
+import logging
+from django.utils.encoding import force_bytes
+from django.core.mail import send_mail
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -11,7 +12,7 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_str, smart_bytes
 from django.contrib.sites.shortcuts import get_current_site
 from django.urls import reverse
-from .utils import send_normal_email
+from .utils import *
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.validators import validate_email
@@ -36,7 +37,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         if value:
-            if '@' not in value or not value.endswith('.com'):
+            if '@' not in value or not value:
                 raise serializers.ValidationError("L'email doit contenir '@' et se terminer par '.com'.")
             if User.objects.filter(email=value).exists():
                 raise serializers.ValidationError("Cet email est déjà utilisé.")
@@ -132,9 +133,10 @@ class LoginSerializer(serializers.Serializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
+    location_display = serializers.CharField(source='get_location_display', read_only=True)
     class Meta:
         model = User
-        fields = ['id','full_name', 'first_name', 'last_name', 'email', 'country_code', 'phone', 'location', 'is_seller', 'created_at','avatar']
+        fields = ['id','full_name', 'first_name', 'last_name', 'email', 'country_code', 'phone', 'location','location_display', 'is_seller', 'created_at','avatar']
         extra_kwargs = {
             'id': {'read_only': True},
             'email': {'read_only': True},
@@ -185,48 +187,65 @@ class SetNewPasswordSerializer(serializers.Serializer):
 
         
 
+logger = logging.getLogger(__name__)
+
 class RequestResetPasswordAPISerializer(serializers.Serializer):
-    email = serializers.EmailField(max_length=255)
-
-    def validate(self, attrs):
-        email = attrs.get('email')
-
-        # Vérification de l'existence de l'utilisateur
-        if not User.objects.filter(email=email).exists():
-            raise serializers.ValidationError("Aucun utilisateur avec cet email.")
-
-        user = User.objects.get(email=email)
-        uidb64 = urlsafe_base64_encode(smart_bytes(user.id))
-        token = PasswordResetTokenGenerator().make_token(user)
-
-        request = self.context.get('request')
-        site_domain = get_current_site(request).domain
-        relative_link = reverse('password-reset-confirm', kwargs={'uidb64': uidb64, 'token': token})
-        abslink = f"http://{site_domain}{relative_link}"
-
-        email_body = f"""
-        Bonjour {user.first_name},
-
-        Vous avez demandé une réinitialisation de votre mot de passe.
-
-        Cliquez sur ce lien pour définir un nouveau mot de passe :
-        {abslink}
-
-        Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message.
-
-        Merci,
-        L’équipe E-Sugu
-        """
-        data = {
-            'email_body': email_body,
-            'email_subject': "Réinitialisation de votre mot de passe",
-            'to_email': user.email
-        }
-
-        send_normal_email(data)  # Tu dois définir cette fonction dans `utils.py`
-        return attrs
+    identifier = serializers.CharField(required=True)
     
-
+    def validate_identifier(self, value):
+        logger.info(f"🔍 Validation de l'identifiant: {value}")
+        
+        if '@' in value:
+            try:
+                user = User.objects.get(email=value)
+                logger.info(f"✅ Utilisateur trouvé par email: {user.email} (ID: {user.id})")
+                return value
+            except User.DoesNotExist:
+                logger.warning(f"❌ Aucun utilisateur avec l'email: {value}")
+                raise serializers.ValidationError("Aucun utilisateur trouvé avec cet email.")
+        
+        elif value.startswith('+'):
+            try:
+                user = User.objects.get(phone_full=value)
+                logger.info(f"✅ Utilisateur trouvé par téléphone: {user.phone_full}")
+                return value
+            except User.DoesNotExist:
+                logger.warning(f"❌ Aucun utilisateur avec le téléphone: {value}")
+                raise serializers.ValidationError("Aucun utilisateur trouvé avec ce numéro de téléphone.")
+        
+        else:
+            raise serializers.ValidationError("Veuillez entrer un email valide ou un numéro de téléphone international (ex: +223...).")
+    
+    def save(self):
+        identifier = self.validated_data['identifier']
+        
+        # Récupérer l'utilisateur
+        if '@' in identifier:
+            user = User.objects.get(email=identifier)
+        else:
+            user = User.objects.get(phone_full=identifier)
+        
+        # Générer le token
+        token_generator = PasswordResetTokenGenerator()
+        token = token_generator.make_token(user)
+        uidb64 = urlsafe_base64_encode(force_bytes(user.id))
+        
+        # ✅ SOLUTION 3 : Détection automatique
+        if user.is_seller:
+            # Frontend vendeur (port 5173)
+            reset_url = f"http://localhost:5173/reset-password?uidb64={uidb64}&token={token}"
+        else:
+            # Frontend acheteur (port 5174) - CELUI QUE VOUS AVEZ
+            reset_url = f"http://localhost:5173/reset-password?uidb64={uidb64}&token={token}"
+        
+        logger.info(f"🔗 Lien généré pour {user.email} (seller: {user.is_seller}): {reset_url}")
+        
+        try:
+            send_password_reset_email(user, reset_url)
+            logger.info(f"✅ Email de réinitialisation envoyé à {user.email}")
+        except Exception as e:
+            logger.error(f"❌ Erreur envoi email à {user.email}: {e}")
+            raise serializers.ValidationError("Erreur lors de l'envoi de l'email.")
 class LogoutSerializer(serializers.Serializer):
 
     refresh_token = serializers.CharField()
@@ -246,3 +265,112 @@ class LogoutSerializer(serializers.Serializer):
         except TokenError:
             self.fail('bad_token')
 
+# serializers.py - Ajoutez cette classe
+# Dans serializers.py - Ajoutez cette classe
+
+class VendorProfileSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    user_phone = serializers.CharField(source='user.phone', read_only=True)
+    user_country_code = serializers.CharField(source='user.country_code', read_only=True)
+    user_first_name = serializers.CharField(source='user.first_name', read_only=True)
+    user_last_name = serializers.CharField(source='user.last_name', read_only=True)
+    
+    class Meta:
+        model = VendorProfile
+        fields = [
+            'id', 
+            'user_email', 'user_phone', 'user_country_code', 'user_first_name', 'user_last_name',
+            # Informations boutique
+            'shop_name', 'contact_name', 'contact_email', 'contact_phone',
+            'customer_service_name', 'customer_service_phone', 'customer_service_email',
+            'address_line1', 'address_line2', 'city', 'region',
+            # Informations société
+            'account_type', 'company_name', 'legal_representative', 'id_type',
+            'tax_id', 'vat_number', 'legal_address',
+            # Informations expédition
+            'shipping_zone', 'use_business_address',
+            'shipping_address_line1', 'shipping_address_line2', 'shipping_city',
+            'shipping_state', 'shipping_zip',
+            'return_address_line1', 'return_address_line2', 'return_city',
+            'return_state', 'return_zip',
+            # Informations complémentaires
+            'has_existing_shop', 'vendor_type',
+            # Métadonnées
+            'is_completed', 'created_at', 'updated_at'
+        ]
+        extra_kwargs = {
+            'is_completed': {'read_only': True},
+            'created_at': {'read_only': True},
+            'updated_at': {'read_only': True}
+        }
+
+    def validate(self, attrs):
+        # Validation pour les comptes entreprise
+        if attrs.get('account_type') == 'company':
+            if not attrs.get('company_name'):
+                raise serializers.ValidationError({
+                    "company_name": "Le nom de l'entreprise est requis pour les comptes professionnels."
+                })
+            if not attrs.get('legal_representative'):
+                raise serializers.ValidationError({
+                    "legal_representative": "Le représentant légal est requis pour les comptes professionnels."
+                })
+        
+        return attrs
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        # Vérifier si un profil existe déjà
+        if hasattr(user, 'vendor_profile'):
+            raise serializers.ValidationError("Un profil vendeur existe déjà pour cet utilisateur.")
+        
+        validated_data['user'] = user
+        return super().create(validated_data)
+class AddressSerializer(serializers.ModelSerializer):
+    full_address = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = Address
+        fields = [
+            'id',
+            'address_type',
+            'first_name',
+            'last_name',
+            'phone',
+            'additional_phone',
+            'address_line1',
+            'address_line2',
+            'city',
+            'region',
+            'delivery_point',
+            'tax_id',
+            'additional_info',
+            'is_default',
+            'full_address',
+            'created_at',
+            'updated_at'
+        ]
+        extra_kwargs = {
+            'created_at': {'read_only': True},
+            'updated_at': {'read_only': True},
+        }
+
+    def validate(self, attrs):
+        # Validation pour s'assurer qu'au moins un numéro de téléphone est fourni
+        if not attrs.get('phone'):
+            raise serializers.ValidationError({"phone": "Le numéro de téléphone principal est requis."})
+        
+        # Validation pour s'assurer que l'adresse principale est fournie
+        if not attrs.get('address_line1'):
+            raise serializers.ValidationError({"address_line1": "L'adresse principale est requise."})
+        
+        # Validation pour s'assurer que la ville est fournie
+        if not attrs.get('city'):
+            raise serializers.ValidationError({"city": "La ville est requise."})
+        
+        return attrs
+
+    def create(self, validated_data):
+        # Ajouter l'utilisateur actuel aux données validées
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)

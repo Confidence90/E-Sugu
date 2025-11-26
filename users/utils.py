@@ -11,6 +11,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -72,3 +75,44 @@ def send_normal_email(data):
         to=[data['to_email']]
     )
     email.send(fail_silently=False)  # ✅ Affiche les erreurs d’envoi
+def send_password_reset_email(user, reset_url):
+    subject = "🔐 Réinitialisation de votre mot de passe E-Sugu"
+    from_email = settings.DEFAULT_FROM_EMAIL
+    site_name = "E-sugu" 
+    message = f"""
+Bonjour {user.first_name},
+
+Vous avez demandé la réinitialisation de votre mot de passe E-Sugu.
+
+🔄 **CLIQUEZ SUR LE LIEN SUIVANT :**
+{reset_url}
+
+⏰ Ce lien expirera dans 24 heures.
+
+🔒 **Sécurité importante :**
+- Ne partagez jamais ce lien
+- Si vous n'avez pas fait cette demande, ignorez cet email
+- Contactez notre support en cas de doute
+
+Merci de nous aider à garder votre compte sécurisé.
+
+Cordialement,
+L'équipe {site_name}
+    """
+
+    # ✅ LOGGING DÉTAILLÉ
+    logger.info(f"📧 send_password_reset_email appelée")
+    logger.info(f"📧 Destinataire: {user.email}")
+    logger.info(f"📧 Expéditeur: {from_email}")
+    logger.info(f"📧 Sujet: {subject}")
+    logger.info(f"📧 URL de reset: {reset_url}")
+
+    try:
+        email = EmailMessage(subject, message, from_email, [user.email])
+        logger.info(f"📧 EmailMessage créé, envoi en cours...")
+        email.send(fail_silently=False)
+        logger.info(f"✅ Email envoyé avec succès à {user.email}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de l'envoi: {str(e)}", exc_info=True)
+        return False

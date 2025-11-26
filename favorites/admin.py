@@ -1,4 +1,4 @@
-# favorites/admin.py
+
 from django.contrib import admin
 from .models import FavoriteListing, FavoriteEvent
 
@@ -10,4 +10,4 @@ class FavoriteListingAdmin(admin.ModelAdmin):
 @admin.register(FavoriteEvent)
 class FavoriteEventAdmin(admin.ModelAdmin):
     list_display = ['id', 'user', 'event']
-    search_fields = ['user__name', 'event__title']
+    search_fields = ['user__username', 'event__title']
