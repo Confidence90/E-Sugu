@@ -259,6 +259,7 @@ class TransactionView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+# payments/views.py - Dans PaymentConfirmationView
 class PaymentConfirmationView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -268,7 +269,6 @@ class PaymentConfirmationView(APIView):
             payment_intent_id = serializer.validated_data['payment_intent_id']
             
             try:
-                # Récupérer toutes les transactions liées à ce payment_intent
                 transactions = Transaction.objects.filter(
                     stripe_payment_intent_id=payment_intent_id,
                     buyer=request.user,
@@ -277,54 +277,50 @@ class PaymentConfirmationView(APIView):
                 
                 if not transactions.exists():
                     return Response(
-                        {'error': 'Aucune transaction en attente trouvée pour ce paiement'}, 
+                        {'error': 'Aucune transaction en attente trouvée'}, 
                         status=status.HTTP_404_NOT_FOUND
                     )
                 
-                # 🔧 CORRECTION : Appeler la fonction avec les parenthèses et le paramètre
                 payment_intent = StripeService.retrieve_payment_intent(payment_intent_id)
                 
-                # Mettre à jour toutes les transactions
                 if payment_intent.status == 'succeeded':
                     with db_transaction.atomic():
-                        # Mettre à jour toutes les transactions
-                        transactions.update(status='completed')
+                        # 🔥 CRÉATION DES COMMANDES
+                        orders_created = []
                         for transaction in transactions:
+                            # Mettre à jour le statut de la transaction
+                            transaction.status = 'completed'
+                            transaction.save()
+                            
+                            # Créer la commande associée
+                            order = transaction.create_order_after_payment()
+                            if order:
+                                orders_created.append(order)
+                            
+                            # Mettre à jour le statut de l'annonce
                             transaction.listing.status = 'sold'
                             transaction.listing.save()
                         
-                        # VIDER LE PANIER après confirmation du paiement
+                        # Vider le panier
                         try:
                             panier = Panier.objects.get(user=request.user)
-                            panier_items_count = panier.items.count()
                             panier.items.all().delete()
-                            logger.info(f"✅ Paiement confirmé - {transactions.count()} transactions complétées, panier vidé ({panier_items_count} articles)")
                         except Panier.DoesNotExist:
-                            logger.warning("⚠️ Panier non trouvé lors de la confirmation")
+                            pass
                     
                     return Response({
                         'status': 'succeeded',
-                        'message': f'Paiement confirmé avec succès - {transactions.count()} transactions',
+                        'message': f'Paiement confirmé - {len(orders_created)} commande(s) créée(s)',
                         'transactions_completed': transactions.count(),
+                        'orders_created': [order.id for order in orders_created],
                         'panier_vide': True
                     }, status=status.HTTP_200_OK)
                 else:
-                    # Paiement non réussi, garder les transactions en pending
                     return Response({
                         'status': payment_intent.status,
                         'message': f'Paiement en statut: {payment_intent.status}'
                     }, status=status.HTTP_200_OK)
                 
-            except Transaction.DoesNotExist:
-                return Response(
-                    {'error': 'Transactions non trouvées'}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            except Panier.DoesNotExist:
-                return Response(
-                    {'error': 'Panier non trouvé'}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
             except Exception as e:
                 logger.error(f"❌ Erreur confirmation paiement: {e}")
                 return Response(
@@ -561,3 +557,4 @@ class PaymentCleanupView(APIView):
                 {'error': 'Erreur lors du nettoyage'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        

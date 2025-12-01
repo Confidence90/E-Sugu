@@ -2,7 +2,7 @@ from django.db import models
 from users.models import User
 from listings.models import Listing
 from decimal import Decimal
-
+from notifications.models import Notification
 class Transaction(models.Model):
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='transactions')
     buyer = models.ForeignKey(
@@ -86,3 +86,42 @@ class Transaction(models.Model):
         self.save()
         
         return True
+    
+    order = models.ForeignKey(
+        'commandes.Order', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='transactions'
+    )
+    
+    def create_order_after_payment(self):
+        """Créer une commande après paiement réussi"""
+        from commandes.models import Order, OrderItem
+        
+        if self.status == 'completed' and not self.order:
+            # Créer la commande
+            order = Order.objects.create(
+                user=self.buyer,
+                total_price=self.total_amount,
+                status='confirmed'  # Commande confirmée après paiement
+            )
+            
+            # Créer l'item de commande
+            OrderItem.objects.create(
+                order=order,
+                listing=self.listing,
+                quantity=self.quantity,
+                price=self.amount
+            )
+            
+            self.order = order
+            self.save()
+            
+            Notification.objects.create(
+                user=self.seller,
+                type='order',
+                content=f'Nouvelle commande #{order.id} pour "{self.listing.title}"'
+            )
+            return order
+        return self.order

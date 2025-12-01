@@ -16,7 +16,7 @@ REST_AUTH = {
 # Security
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-for-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,192.168.1.145', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,192.168.1.145, 192.168.100.57 ', cast=lambda v: [s.strip() for s in v.split(',')])
 ALLOWED_HOSTS = ['*']
 # Application definition
 INSTALLED_APPS = [

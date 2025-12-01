@@ -1,7 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import OrderViewSet, CreateOrderView, BulkOrderActionView, ExportOrdersView, OrderStatsView     
-
+from .views import *
 router = DefaultRouter()
 router.register('commandes', OrderViewSet, basename='commande')
 
@@ -11,5 +10,6 @@ urlpatterns = router.urls + [
     path('bulk-action/', BulkOrderActionView.as_view(), name='bulk-action'),
     path('export/', ExportOrdersView.as_view(), name='export-orders'),
     path('stats/', OrderStatsView.as_view(), name='order-stats'),
-    
+    path('vendor/orders/', VendorOrdersView.as_view(), name='vendor-orders'),
+    path('vendor/orders/<int:order_id>/', VendorOrderDetailView.as_view(), name='vendor-order-detail'),
 ]

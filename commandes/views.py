@@ -10,6 +10,7 @@ from transactions.models import Transaction
 from notifications.models import Notification  # Import the Notification model
 import csv
 from datetime import datetime
+from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.http import HttpResponse  # Ajouter cet import
 from django.db import models
@@ -261,3 +262,139 @@ class OrderStatsView(APIView):
                 'total_revenue': float(total_revenue),
                 'monthly_orders': monthly_orders
             })
+
+# commandes/views.py - AJOUTER
+class VendorOrdersView(APIView):
+    """Vue pour que les vendeurs voient leurs commandes"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Récupérer toutes les commandes du vendeur"""
+        user = request.user
+        
+        # Vérifier que l'utilisateur est un vendeur
+        if not user.is_seller:
+            return Response(
+                {'error': 'Accès réservé aux vendeurs'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Récupérer les commandes via les transactions
+        vendor_transactions = Transaction.objects.filter(
+            seller=user,
+            status='completed'
+        ).select_related('order', 'listing', 'buyer')
+        
+        # Si vous voulez récupérer directement via OrderItem
+        from django.db.models import Q
+        vendor_orders = Order.objects.filter(
+            Q(items__listing__user=user) |  # Commandes de ses produits
+            Q(transactions__seller=user)     # Commandes via transactions
+        ).distinct().select_related('user').prefetch_related('items')
+        
+        # Préparer les données de réponse
+        orders_data = []
+        for order in vendor_orders:
+            order_items = []
+            for item in order.items.all():
+                if item.listing.user == user:  # Seulement les items du vendeur
+                    order_items.append({
+                        'id': item.id,
+                        'listing_title': item.listing.title,
+                        'quantity': item.quantity,
+                        'price': float(item.price),
+                        'subtotal': float(item.subtotal())
+                    })
+            
+            if order_items:  # Seulement les commandes avec ses produits
+                orders_data.append({
+                    'order_id': order.id,
+                    'order_number': order.order_number,
+                    'buyer': {
+                        'id': order.user.id,
+                        'name': order.user.get_full_name(),
+                        'email': order.user.email,
+                        'phone': order.user.phone
+                    },
+                    'items': order_items,
+                    'total_price': float(order.total_price),
+                    'status': order.status,
+                    'created_at': order.created_at,
+                    'is_packaged': order.is_packaged,
+                    'shipping_info': {
+                        'country': order.shipping_country,
+                        'method': order.shipping_method
+                    }
+                })
+        
+        return Response({
+            'count': len(orders_data),
+            'orders': orders_data
+        }, status=status.HTTP_200_OK)
+
+class VendorOrderDetailView(APIView):
+    """Détails d'une commande spécifique pour le vendeur"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id)
+            
+            # Vérifier que le vendeur a des produits dans cette commande
+            vendor_items = order.items.filter(listing__user=request.user)
+            if not vendor_items.exists():
+                return Response(
+                    {'error': 'Commande non trouvée ou accès non autorisé'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Préparer les données détaillées
+            order_data = {
+                'order_id': order.id,
+                'order_number': order.order_number,
+                'buyer': {
+                    'id': order.user.id,
+                    'name': order.user.get_full_name(),
+                    'email': order.user.email,
+                    'phone': order.user.phone,
+                    'location': order.user.location
+                },
+                'vendor_items': [],
+                'other_items': [],
+                'order_total': float(order.total_price),
+                'vendor_total': 0.0,
+                'status': order.status,
+                'created_at': order.created_at,
+                'updated_at': order.updated_at,
+                'shipping_info': {
+                    'country': order.shipping_country,
+                    'method': order.shipping_method
+                },
+                'payment_status': 'paid' if hasattr(order, 'transactions') and 
+                order.transactions.filter(status='completed').exists() else 'pending'
+            }
+            
+            # Séparer les items du vendeur des autres
+            for item in order.items.all():
+                item_data = {
+                    'id': item.id,
+                    'listing_title': item.listing.title,
+                    'quantity': item.quantity,
+                    'unit_price': float(item.price),
+                    'subtotal': float(item.subtotal()),
+                    'listing_status': item.listing.status
+                }
+                
+                if item.listing.user == request.user:
+                    order_data['vendor_items'].append(item_data)
+                    order_data['vendor_total'] += float(item.subtotal())
+                else:
+                    order_data['other_items'].append(item_data)
+            
+            return Response(order_data, status=status.HTTP_200_OK)
+            
+        except Order.DoesNotExist:
+            return Response(
+                {'error': 'Commande non trouvée'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )

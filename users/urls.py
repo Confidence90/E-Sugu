@@ -53,5 +53,6 @@ urlpatterns = [
     path('admin/dashboard/stats/', admin_dashboard_stats, name='admin-dashboard-stats'),
     path('admin/dashboard/recent-orders/', admin_recent_orders, name='admin-recent-orders'),
     path('admin/dashboard/top-vendors/', admin_top_vendors, name='admin-top-vendors'),
+    path('admin/recent-orders/', admin_recent_orders, name='admin-recent-orders'), 
     
 ] + router.urls

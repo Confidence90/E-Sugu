@@ -2281,34 +2281,137 @@ def admin_recent_orders(request):
     
     return Response(orders_data)
 
+# users/views.py - CORRECTION de admin_top_vendors
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
 def admin_top_vendors(request):
-    """Top vendeurs pour le dashboard"""
-    from django.db.models import Count, Sum, Avg
-    from reviews.models import Review
+    """Top vendeurs pour le dashboard - VERSION CORRIGÉE"""
+    try:
+        from django.db.models import Count, Sum, Avg
+        from reviews.models import Review
+        
+        # CORRECTION: Vérifier que l'utilisateur a des annonces
+        top_vendors = User.objects.filter(
+            role='seller',
+            is_active=True,
+            listings__isnull=False  # S'assurer que le vendeur a des annonces
+        ).annotate(
+            total_orders=Count('listings__orders', distinct=True),
+            total_sales=Sum('listings__orders__total_price'),
+            avg_rating=Avg('received_reviews__rating')
+        ).filter(
+            total_orders__gt=0
+        ).order_by('-total_sales')[:5]
+        
+        vendors_data = []
+        for vendor in top_vendors:
+            vendor_name = "Vendeur sans nom"
+            
+            # CORRECTION: Gestion sécurisée du nom
+            if hasattr(vendor, 'vendor_profile') and vendor.vendor_profile:
+                vendor_name = vendor.vendor_profile.shop_name
+            elif vendor.get_full_name():
+                vendor_name = vendor.get_full_name()
+            else:
+                vendor_name = vendor.email.split('@')[0]
+            
+            vendors_data.append({
+                'name': vendor_name,
+                'sales': float(vendor.total_sales or 0),
+                'orders': vendor.total_orders or 0,
+                'rating': round(vendor.avg_rating or 4.5, 1)
+            })
+        
+        return Response(vendors_data)
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur dans admin_top_vendors: {str(e)}")
+        return Response(
+            {'error': 'Erreur lors du chargement des top vendeurs'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def debug_user_relations(request):
+    """Debug: Afficher toutes les relations du modèle User"""
+    from django.db.models.fields.related import ForeignKey, ManyToManyField
     
-    top_vendors = User.objects.filter(
-        role='seller',
-        is_active=True
-    ).annotate(
-        total_orders=Count('listings__orders'),
-        total_sales=Sum('listings__orders__total_price'),
-        avg_rating=Avg('reviews_received__rating')
-    ).filter(
-        total_orders__gt=0
-    ).order_by('-total_sales')[:5]
+    user_fields = []
+    for field in User._meta.get_fields():
+        field_info = {
+            'name': field.name,
+            'type': field.__class__.__name__,
+            'related_model': getattr(field, 'related_model', None),
+            'is_relation': field.is_relation,
+        }
+        user_fields.append(field_info)
     
-    vendors_data = []
-    for vendor in top_vendors:
-        vendors_data.append({
-            'name': getattr(vendor.vendor_profile, 'shop_name', vendor.get_full_name()),
-            'sales': f"€{vendor.total_sales or 0:,.0f}",
-            'orders': vendor.total_orders or 0,
-            'rating': round(vendor.avg_rating or 4.5, 1)
-        })
+    return Response({
+        'user_relations': user_fields,
+        'available_choices': [f.name for f in User._meta.get_fields() if f.is_relation]
+    })
+
+# users/views.py - AJOUTEZ CETTE VUE
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_recent_orders(request):
+    """Commandes récentes pour le dashboard admin"""
+    try:
+        from commandes.models import Order
+        from commandes.serializers import OrderSerializer
+        
+        # Récupérer les 10 dernières commandes
+        recent_orders = Order.objects.select_related(
+            'buyer', 'listing'
+        ).order_by('-created_at')[:10]
+        
+        # Transformer les données pour le frontend
+        orders_data = []
+        for order in recent_orders:
+            customer_name = "Client sans nom"
+            if order.buyer.get_full_name():
+                customer_name = order.buyer.get_full_name()
+            elif order.buyer.first_name:
+                customer_name = order.buyer.first_name
+            else:
+                customer_name = order.buyer.email.split('@')[0]
+            
+            orders_data.append({
+                'id': f"#{order.id}",
+                'customer': customer_name,
+                'product': order.listing.title if order.listing else "Produit supprimé",
+                'amount': f"€{order.total_price:.2f}",
+                'status': order.get_status_display(),
+                'date': format_relative_time(order.created_at)
+            })
+        
+        return Response(orders_data)
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur dans admin_recent_orders: {str(e)}")
+        return Response(
+            {'error': 'Erreur lors du chargement des commandes récentes'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+def format_relative_time(date):
+    """Formater la date en temps relatif"""
+    from django.utils import timezone
+    from django.utils.timesince import timesince
     
-    return Response(vendors_data)
+    now = timezone.now()
+    if date.date() == now.date():
+        return f"Il y a {timesince(date, now).split(',')[0]}"
+    return date.strftime('%d/%m/%Y')
+def get_vendor_display_name(vendor):
+    """Get the best display name for a vendor"""
+    if hasattr(vendor, 'vendor_profile') and vendor.vendor_profile.shop_name:
+        return vendor.vendor_profile.shop_name
+    elif vendor.get_full_name():
+        return vendor.get_full_name()
+    else:
+        return vendor.email.split('@')[0]  # Use username part of email
+
 
 def format_relative_time(date):
     """Formater la date en temps relatif"""
@@ -2345,3 +2448,55 @@ def check_admin_permission(request):
             'is_active': user.is_active,
         }
     })
+
+# users/views.py - AJOUTEZ CES VUES MANQUANTES
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_dashboard_stats(request):
+    """Statistiques complètes pour le dashboard admin"""
+    from django.utils import timezone
+    from datetime import timedelta
+    from listings.models import Listing
+    from commandes.models import Order
+    from transactions.models import Transaction
+    
+    today = timezone.now()
+    last_30_days = today - timedelta(days=30)
+    
+    # Utilisateurs
+    total_users = User.objects.count()
+    active_users = User.objects.filter(is_active=True).count()
+    sellers_count = User.objects.filter(role='seller', is_active=True).count()
+    new_users_today = User.objects.filter(created_at__date=today.date()).count()
+    
+    # Produits
+    products_count = Listing.objects.filter(status='active').count()
+    
+    # Commandes et revenus
+    recent_orders_count = Order.objects.filter(created_at__gte=last_30_days).count()
+    total_revenue = Transaction.objects.filter(
+        status='success',
+        created_at__gte=last_30_days
+    ).aggregate(total=Sum('amount'))['total'] or 0
+    
+    # Distribution par rôle
+    role_distribution = {
+        'buyer': User.objects.filter(role='buyer').count(),
+        'seller': User.objects.filter(role='seller').count(),
+        'admin': User.objects.filter(role='admin').count(),
+    }
+    
+    stats = {
+        'total_users': total_users,
+        'active_users': active_users,
+        'sellers_count': sellers_count,
+        'new_users_today': new_users_today,
+        'products_count': products_count,
+        'recent_orders_count': recent_orders_count,
+        'total_revenue': float(total_revenue),
+        'role_distribution': role_distribution,
+    }
+    
+    return Response(stats)
+
