@@ -2500,3 +2500,19 @@ def admin_dashboard_stats(request):
     
     return Response(stats)
 
+# Dans users/views.py
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_test_endpoint(request):
+    """Test endpoint pour vérifier les permissions admin"""
+    return Response({
+        'message': 'Accès admin autorisé',
+        'user': {
+            'id': request.user.id,
+            'email': request.user.email,
+            'is_staff': request.user.is_staff,
+            'is_superuser': request.user.is_superuser,
+            'role': request.user.role,
+        },
+        'has_permission': True
+    })
