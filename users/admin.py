@@ -10,6 +10,10 @@ from datetime import timedelta
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from .forms import UserCreationForm, UserChangeForm
+import random
+from django.core.mail import EmailMessage
+from django.contrib import messages
+from .models import OneTimePassword
 
 
 # 📊 Filtre personnalisé : activité récente
@@ -147,11 +151,85 @@ class UserAdmin(BaseUserAdmin):
     reinitialiser_mot_de_passe.short_description = "🔁 Réinitialiser mot de passe (demo1234)"
 
     def demander_reinitialisation(self, request, queryset):
+        """Envoyer un code de réinitialisation par email aux utilisateurs sélectionnés"""
+        success_count = 0
+        errors = []
+        
         for user in queryset:
-            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-            client.verify.services(settings.TWILIO_VERIFY_SERVICE_SID).verifications.create(
-                to=user.phone_full,
-                channel='sms'
+            try:
+                # Vérifier si l'utilisateur a un email
+                if not user.email:
+                    errors.append(f"Pas d'email pour l'utilisateur {user.username}")
+                    continue
+                
+                # Générer un code OTP
+                code = ''.join(str(random.randint(0, 9)) for _ in range(6))
+                
+                # Supprimer les anciens OTP de l'utilisateur
+                OneTimePassword.objects.filter(user=user).delete()
+                
+                # Créer un nouveau OTP
+                OneTimePassword.objects.create(
+                    user=user,
+                    code=code
+                )
+                
+                # Préparer l'email
+                subject = "🔐 Réinitialisation de votre mot de passe E-Sugu"
+                from_email = settings.DEFAULT_FROM_EMAIL
+                site_name = "E-sugu"
+                
+                message = f"""
+Bonjour {user.first_name or user.username},
+
+Vous avez demandé la réinitialisation de votre mot de passe E-Sugu.
+
+Voici votre code de réinitialisation : **{code}**
+
+⏰ Ce code est valable pendant 5 minutes.
+
+🔒 **Sécurité importante :**
+- Ne partagez jamais ce code
+- Si vous n'avez pas fait cette demande, ignorez cet email
+- Contactez notre support en cas de doute
+
+Pour réinitialiser votre mot de passe :
+1. Rendez-vous sur la page de réinitialisation
+2. Entrez votre email et ce code
+3. Créez votre nouveau mot de passe
+
+Merci de nous aider à garder votre compte sécurisé.
+
+Cordialement,
+L'équipe {site_name}
+                """
+                
+                # Envoyer l'email
+                email = EmailMessage(subject, message, from_email, [user.email])
+                email.send(fail_silently=False)
+                
+                success_count += 1
+                
+            except Exception as e:
+                errors.append(f"Erreur pour {user.email}: {str(e)}")
+        
+        # Message de succès
+        if success_count > 0:
+            self.message_user(
+                request, 
+                f"{success_count} email(s) de réinitialisation envoyé(s) avec succès.",
+                level=messages.SUCCESS
             )
-        self.message_user(request, f"{queryset.count()} utilisateur(s) ont reçu un code de réinitialisation.")
-    demander_reinitialisation.short_description = "🔐 Envoyer code pour réinitialiser le mot de passe"
+        
+        # Afficher les erreurs s'il y en a
+        if errors:
+            error_message = "Erreurs survenues :<br>" + "<br>".join(errors[:5])  # Limiter à 5 erreurs
+            if len(errors) > 5:
+                error_message += f"<br>... et {len(errors) - 5} erreur(s) supplémentaires"
+            self.message_user(
+                request, 
+                error_message,
+                level=messages.ERROR
+            )
+    
+    demander_reinitialisation.short_description = "📧 Envoyer email de réinitialisation"

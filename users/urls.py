@@ -54,5 +54,14 @@ urlpatterns = [
     path('admin/dashboard/recent-orders/', admin_recent_orders, name='admin-recent-orders'),
     path('admin/dashboard/top-vendors/', admin_top_vendors, name='admin-top-vendors'),
     path('admin/recent-orders/', admin_recent_orders, name='admin-recent-orders'), 
-    
+    path('admin/test-raw-data/', admin_test_raw_data, name='admin-test-raw-data'),
+    path('admin/bulk-update/', admin_bulk_update_users, name='admin-bulk-update'),
+    path('admin/bulk-reset-password/', admin_bulk_reset_password, name='admin-bulk-reset-password'),
+    path('admin/bulk-request-password-reset/', admin_bulk_request_password_reset, name='admin-bulk-request-password-reset'),
+    path('admin/vendors/', admin_vendors_list, name='admin-vendors-list'),
+    path('admin/vendors/stats/', admin_vendors_stats, name='admin-vendors-stats'),
+    path('admin/vendors/<int:vendor_id>/status/', admin_update_vendor_status, name='admin-update-vendor-status'),
+    path('admin/vendors/<int:vendor_id>/approve-kyc/', admin_approve_vendor_kyc, name='admin-approve-vendor-kyc'),
+    path('admin/vendors/<int:vendor_id>/reject-kyc/', admin_reject_vendor_kyc, name='admin-reject-vendor-kyc'),
+
 ] + router.urls

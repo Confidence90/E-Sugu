@@ -25,7 +25,8 @@ class UserSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ['id','first_name','last_name', 'username', 'email', 'country_code', 'phone', 'password', 'password2', 'location', 'is_seller']
+        fields = ['id','first_name','last_name', 'username', 'email', 'country_code', 'phone', 
+                 'password', 'password2', 'location', 'is_seller', 'role', 'is_active', 'is_staff', 'is_superuser']  # AJOUTER 'role'
         extra_kwargs = {
             'password': {'write_only': True, 'required': True},
             'first_name': {'required': True, 'allow_blank': False},
@@ -33,6 +34,10 @@ class UserSerializer(serializers.ModelSerializer):
             'email': {'required': True, 'allow_blank': False},
             'phone': {'required': True, 'allow_blank': False},
             'id': {'read_only': True},
+            'role': {'read_only': False},  # PERMETTRE L'ÉCRITURE
+            'is_active': {'read_only': False},
+            'is_staff': {'read_only': False},
+            'is_superuser': {'read_only': False},
         }
 
     def validate_email(self, value):
@@ -374,3 +379,35 @@ class AddressSerializer(serializers.ModelSerializer):
         # Ajouter l'utilisateur actuel aux données validées
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+    
+
+# users/serializers.py - AJOUTEZ CE SERIALIZER
+class AdminUserSerializer(serializers.ModelSerializer):
+    """Serializer pour l'administration des utilisateurs"""
+    full_name = serializers.SerializerMethodField()
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+    last_login_formatted = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = User
+        fields = [
+            'id', 'email', 'username', 'full_name',
+            'first_name', 'last_name',
+            'phone', 'phone_full', 'country_code', 'location',
+            'role', 'role_display',
+            'is_seller', 'is_seller_pending',
+            'is_active', 'is_verified',
+            'is_staff', 'is_superuser',
+            'auth_provider',
+            'created_at', 'last_login', 'last_login_formatted',
+            'vendor_profile'
+        ]
+        read_only_fields = ['created_at', 'last_login', 'phone_full']
+    
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip() if obj.first_name or obj.last_name else obj.username
+    
+    def get_last_login_formatted(self, obj):
+        if obj.last_login:
+            return obj.last_login.strftime('%d/%m/%Y %H:%M')
+        return 'Jamais connecté'

@@ -19,6 +19,7 @@ from django.utils.encoding import smart_str, DjangoUnicodeDecodeError
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from django.contrib.auth.hashers import make_password
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from dj_rest_auth.registration.views import SocialLoginView
@@ -46,6 +47,9 @@ import logging
 from django.http import JsonResponse
 from allauth.socialaccount.models import SocialAccount
 import requests
+import random
+from django.core.mail import send_mail, EmailMessage
+from twilio.rest import Client
 logger = logging.getLogger(__name__)
 # 🚀 Créer un compte utilisateur
 #@csrf_exempt
@@ -1979,7 +1983,8 @@ class AdminUserViewSet(viewsets.ModelViewSet):
 def admin_users_list(request):
     """Liste des utilisateurs pour l'administration"""
     from .models import User
-    from .serializers import UserSerializer
+    #from .serializers import UserSerializer
+    from .serializers import AdminUserSerializer
     
     users = User.objects.all()
     
@@ -1994,26 +1999,34 @@ def admin_users_list(request):
             Q(email__icontains=search) |
             Q(first_name__icontains=search) |
             Q(last_name__icontains=search) |
-            Q(phone__icontains=search)
+            Q(phone__icontains=search) |
+            Q(username__icontains=search)
         )
     
     is_active = request.GET.get('is_active')
     if is_active is not None:
         users = users.filter(is_active=is_active.lower() == 'true')
+
+    order_by = request.GET.get('order_by', '-created_at')
+    if order_by.lstrip('-') in ['email', 'first_name', 'last_name', 'created_at', 'last_login']:
+        users = users.order_by(order_by)
+    else:
+        users = users.order_by('-created_at')
     
-    users = users.order_by('-created_at')
+    
     page = int(request.GET.get('page', '1'))
     page_size = int(request.GET.get('page_size', '50'))
     start_index = (page - 1) * page_size
     end_index = start_index + page_size
     
     paginated_users = users[start_index:end_index]
-    serializer = UserSerializer(paginated_users, many=True)
+    serializer = AdminUserSerializer(paginated_users, many=True, context={'request': request})
     
     data = {
         'count': users.count(),
         'page': page,
         'page_size': page_size,
+        'total_pages': (users.count() + page_size - 1) // page_size,
         'results': serializer.data
     }
     
@@ -2516,3 +2529,510 @@ def admin_test_endpoint(request):
         },
         'has_permission': True
     })
+# users/views.py - AJOUTEZ CETTE VUE POUR TEST
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_test_raw_data(request):
+    """Test: Retourne les données brutes pour débogage"""
+    users = User.objects.all()[:5]  # 5 premiers
+    
+    raw_data = []
+    for user in users:
+        raw_data.append({
+            'id': user.id,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'role': user.role,
+            'is_seller': user.is_seller,
+            'is_active': user.is_active,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
+            'has_role_field': hasattr(user, 'role'),
+            'role_value': user.role if hasattr(user, 'role') else 'NO FIELD',
+        })
+    
+    return Response({
+        'message': 'Données brutes des utilisateurs',
+        'count': len(raw_data),
+        'users': raw_data,
+        'debug_info': {
+            'model_fields': [f.name for f in User._meta.get_fields() if not f.is_relation],
+            'role_choices': User.ROLE_CHOICES,
+        }
+    })
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_bulk_update_users(request):
+    """Mise à jour en masse des utilisateurs"""
+    user_ids = request.data.get('user_ids', [])
+    update_data = request.data.copy()
+    update_data.pop('user_ids', None)
+    
+    if not user_ids:
+        return Response({'error': 'Aucun utilisateur sélectionné'}, status=400)
+    
+    # Mise à jour sécurisée
+    users = User.objects.filter(id__in=user_ids)
+    
+    # Empêcher la modification des champs sensibles
+    restricted_fields = ['is_superuser', 'is_staff']
+    for field in restricted_fields:
+        if field in update_data and not request.user.is_superuser:
+            return Response(
+                {'error': f'Vous ne pouvez pas modifier {field}'},
+                status=403
+            )
+    
+    updated_count = users.update(**update_data)
+    
+    return Response({
+        'message': f'{updated_count} utilisateur(s) mis à jour',
+        'count': updated_count
+    })
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_bulk_reset_password(request):
+    """Réinitialisation en masse des mots de passe"""
+    user_ids = request.data.get('user_ids', [])
+    
+    if not user_ids:
+        return Response({'error': 'Aucun utilisateur sélectionné'}, status=400)
+    
+    users = User.objects.filter(id__in=user_ids)
+    default_password = 'demo1234'
+    hashed_password = make_password(default_password)
+    
+    for user in users:
+        user.password = hashed_password
+        user.save()
+    
+    return Response({
+        'message': f'{users.count()} mot(s) de passe réinitialisé(s)',
+        'default_password': default_password,
+        'count': users.count()
+    })
+
+# Dans views.py - MODIFIEZ admin_bulk_request_password_reset
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_bulk_request_password_reset(request):
+    """Demande de réinitialisation en masse PAR EMAIL"""
+    user_ids = request.data.get('user_ids', [])
+    
+    if not user_ids:
+        return Response({'error': 'Aucun utilisateur sélectionné'}, status=400)
+    
+    users = User.objects.filter(id__in=user_ids)
+    success_count = 0
+    errors = []
+    
+    for user in users:
+        try:
+            if user.email:
+                # Générer un code OTP
+                code = ''.join(str(random.randint(0, 9)) for _ in range(6))
+                
+                # Supprimer les anciens OTP
+                OneTimePassword.objects.filter(user=user).delete()
+                
+                # Créer un nouveau OTP
+                OneTimePassword.objects.create(
+                    user=user,
+                    code=code
+                )
+                
+                # Envoyer l'email
+                subject = "🔐 Code de réinitialisation de mot de passe E-Sugu"
+                from_email = settings.DEFAULT_FROM_EMAIL
+                site_name = "E-sugu"
+                
+                message = f"""
+Bonjour {user.first_name or user.username},
+
+L'administrateur a demandé une réinitialisation de votre mot de passe.
+
+Voici votre code de réinitialisation : **{code}**
+
+⏰ Ce code est valable pendant 5 minutes.
+
+Pour réinitialiser votre mot de passe :
+1. Rendez-vous sur : http://localhost:5173/reset-password
+2. Entrez votre email : {user.email}
+3. Entrez le code ci-dessus
+4. Créez votre nouveau mot de passe
+
+Si vous n'avez pas fait cette demande, vous pouvez ignorer cet email.
+
+Cordialement,
+L'équipe {site_name}
+                """
+                
+                email = EmailMessage(subject, message, from_email, [user.email])
+                email.send(fail_silently=False)
+                
+                success_count += 1
+            else:
+                errors.append(f"Pas d'email pour {user.username}")
+                
+        except Exception as e:
+            errors.append(f"Erreur pour {user.email or user.username}: {str(e)}")
+    
+    response_data = {
+        'message': f'{success_count} email(s) de réinitialisation envoyé(s)',
+        'success_count': success_count,
+        'error_count': len(errors),
+    }
+    
+    if errors:
+        response_data['errors'] = errors[:10]
+    
+    return Response(response_data)
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_vendors_list(request):
+    """Liste des vendeurs pour l'administration"""
+    # Filtrer seulement les vendeurs
+    users = User.objects.filter(
+        Q(role='seller') | Q(is_seller=True)
+    ).select_related('vendor_profile')
+    
+    # Filtres
+    status_filter = request.GET.get('status')
+    if status_filter == 'active':
+        users = users.filter(is_active=True)
+    elif status_filter == 'inactive':
+        users = users.filter(is_active=False)
+    
+    kyc_status = request.GET.get('kyc_status')
+    if kyc_status:
+        if kyc_status == 'pending':
+            users = users.filter(vendor_profile__status='pending')
+        elif kyc_status == 'approved':
+            users = users.filter(vendor_profile__status='approved')
+        elif kyc_status == 'rejected':
+            users = users.filter(vendor_profile__status='rejected')
+    
+    search = request.GET.get('search')
+    if search:
+        users = users.filter(
+            Q(email__icontains=search) |
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search) |
+            Q(vendor_profile__shop_name__icontains=search) |
+            Q(phone__icontains=search)
+        )
+    
+    # CORRECTION: Simplifier les annotations pour éviter l'erreur de types mixtes
+    from django.db.models import Count, Sum, Avg
+    
+    # Annoter directement sans sous-requêtes complexes
+    users = users.annotate(
+        product_count=Count('listings', distinct=True),
+        active_product_count=Count('listings', distinct=True, filter=Q(listings__status='active')),
+        total_revenue=Sum('listings__orders__total_price', filter=Q(listings__orders__status='completed')),
+        sales_count=Count('listings__orders', distinct=True, filter=Q(listings__orders__status='completed')),
+        avg_rating=Avg('received_reviews__rating')
+    )
+    
+    order_by = request.GET.get('order_by', '-created_at')
+    if order_by.lstrip('-') in ['email', 'first_name', 'last_name', 'created_at', 'last_login', 'total_revenue']:
+        users = users.order_by(order_by)
+    else:
+        users = users.order_by('-created_at')
+    
+    page = int(request.GET.get('page', '1'))
+    page_size = int(request.GET.get('page_size', '50'))
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    
+    paginated_users = users[start_index:end_index]
+    
+    # Préparer les données pour la réponse
+    vendors_data = []
+    for user in paginated_users:
+        vendor_data = {
+            'id': user.id,
+            'user_id': user.id,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'username': user.username,
+            'phone': user.phone,
+            'country_code': user.country_code,
+            'location': user.location,
+            'role': user.role,
+            'is_active': user.is_active,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
+            'is_seller': user.is_seller,
+            'is_seller_pending': user.is_seller_pending,
+            'is_verified': user.is_verified,
+            'auth_provider': user.auth_provider,
+            'created_at': user.created_at.isoformat() if user.created_at else None,
+            'last_login': user.last_login.isoformat() if user.last_login else None,
+        }
+        
+        # Ajouter le profil vendeur si existant
+        if hasattr(user, 'vendor_profile'):
+            vendor_profile = user.vendor_profile
+            
+            # CORRECTION: Gérer verified_at de manière sécurisée
+            verified_at = None
+            try:
+                if hasattr(vendor_profile, 'verified_at') and vendor_profile.verified_at:
+                    verified_at = vendor_profile.verified_at.isoformat()
+            except AttributeError:
+                pass  # Le champ n'existe pas dans la base de données
+            
+            vendor_data['vendor_profile'] = {
+                'id': vendor_profile.id,
+                'shop_name': vendor_profile.shop_name,
+                'contact_name': vendor_profile.contact_name,
+                'contact_email': vendor_profile.contact_email,
+                'contact_phone': vendor_profile.contact_phone,
+                'business_license': vendor_profile.business_license,
+                'tax_id': vendor_profile.tax_id,
+                'account_type': vendor_profile.account_type,
+                'is_completed': vendor_profile.is_completed,
+                'verified_at': verified_at,  # Utiliser la valeur sécurisée
+                'status': vendor_profile.status,
+                'verification_status': vendor_profile.verification_status,
+                'created_at': vendor_profile.created_at.isoformat() if vendor_profile.created_at else None,
+                'updated_at': vendor_profile.updated_at.isoformat() if vendor_profile.updated_at else None,
+            }
+        else:
+            vendor_data['vendor_profile'] = None
+        
+        # Ajouter les statistiques - CORRECTION: gérer les valeurs None
+        vendor_data['stats'] = {
+            'total_products': user.product_count or 0,
+            'active_products': user.active_product_count or 0,
+            'total_sales': user.sales_count or 0,
+            'total_revenue': float(user.total_revenue or 0),
+            'avg_rating': float(user.avg_rating or 0),
+            'total_reviews': Review.objects.filter(reviewed=user).count(),
+        }
+        
+        vendors_data.append(vendor_data)
+    
+    data = {
+        'count': users.count(),
+        'page': page,
+        'page_size': page_size,
+        'total_pages': (users.count() + page_size - 1) // page_size,
+        'results': vendors_data
+    }
+    
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_vendors_stats(request):
+    """Statistiques des vendeurs pour l'administration"""
+    # Filtrer seulement les vendeurs
+    sellers = User.objects.filter(
+        Q(role='seller') | Q(is_seller=True)
+    )
+    
+    # Statistiques de base
+    total_vendors = sellers.count()
+    active_vendors = sellers.filter(is_active=True).count()
+    
+    # Nouveaux vendeurs aujourd'hui
+    today = timezone.now().date()
+    new_vendors_today = sellers.filter(created_at__date=today).count()
+    
+    # Vendeurs en attente (is_seller_pending = True)
+    pending_vendors = sellers.filter(is_seller_pending=True).count()
+    
+    # Distribution KYC
+    kyc_distribution = {
+        'pending': sellers.filter(vendor_profile__status='pending').count(),
+        'approved': sellers.filter(vendor_profile__status='approved').count(),
+        'rejected': sellers.filter(vendor_profile__status='rejected').count(),
+    }
+    
+    # Chiffre d'affaires total (30 derniers jours)
+    thirty_days_ago = timezone.now() - timedelta(days=30)
+    total_revenue = Order.objects.filter(
+        listing__user__in=sellers,
+        status='completed',
+        created_at__gte=thirty_days_ago
+    ).aggregate(total=Sum('total_price'))['total'] or 0
+    
+    # Note moyenne
+    avg_rating = Review.objects.filter(
+        reviewed__in=sellers
+    ).aggregate(avg=Avg('rating'))['avg'] or 0
+    
+    stats = {
+        'total_vendors': total_vendors,
+        'active_vendors': active_vendors,
+        'pending_vendors': pending_vendors,
+        'total_revenue': float(total_revenue),
+        'avg_rating': float(avg_rating),
+        'new_vendors_today': new_vendors_today,
+        'kyc_distribution': kyc_distribution,
+    }
+    
+    return Response(stats)
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_update_vendor_status(request, vendor_id):
+    """Mettre à jour le statut d'un vendeur"""
+    try:
+        user = User.objects.get(id=vendor_id)
+        
+        # Vérifier que c'est un vendeur
+        if not (user.role == 'seller' or user.is_seller):
+            return Response(
+                {'error': 'Cet utilisateur n\'est pas un vendeur'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        data = request.data
+        
+        # Mettre à jour le statut de l'utilisateur
+        if 'is_active' in data:
+            user.is_active = data['is_active']
+        
+        if 'is_seller_pending' in data:
+            user.is_seller_pending = data['is_seller_pending']
+        
+        user.save()
+        
+        # Mettre à jour le profil vendeur si nécessaire
+        if 'vendor_profile' in data and hasattr(user, 'vendor_profile'):
+            vendor_profile = user.vendor_profile
+            profile_data = data['vendor_profile']
+            
+            if 'status' in profile_data:
+                vendor_profile.status = profile_data['status']
+                if profile_data['status'] == 'approved':
+                    vendor_profile.verified_at = timezone.now()
+                    vendor_profile.verification_status = 'verified'
+            
+            vendor_profile.save()
+        
+        return Response({
+            'message': 'Statut mis à jour avec succès',
+            'vendor': {
+                'id': user.id,
+                'email': user.email,
+                'is_active': user.is_active,
+                'is_seller_pending': user.is_seller_pending,
+                'vendor_profile_status': user.vendor_profile.status if hasattr(user, 'vendor_profile') else None,
+            }
+        })
+        
+    except User.DoesNotExist:
+        return Response(
+            {'error': 'Vendeur non trouvé'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Erreur mise à jour statut vendeur: {str(e)}")
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_approve_vendor_kyc(request, vendor_id):
+    """Approuver le KYC d'un vendeur"""
+    try:
+        user = User.objects.get(id=vendor_id)
+        
+        if not hasattr(user, 'vendor_profile'):
+            return Response(
+                {'error': 'Ce vendeur n\'a pas de profil vendeur'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        vendor_profile = user.vendor_profile
+        vendor_profile.status = 'approved'
+        vendor_profile.verified_at = timezone.now()
+        vendor_profile.verification_status = 'verified'
+        vendor_profile.save()
+        
+        # Activer le vendeur s'il était en attente
+        if user.is_seller_pending:
+            user.is_seller_pending = False
+            user.is_active = True
+            user.save()
+        
+        return Response({
+            'message': 'KYC approuvé avec succès',
+            'vendor': {
+                'id': user.id,
+                'email': user.email,
+                'vendor_profile': {
+                    'status': vendor_profile.status,
+                    'verified_at': vendor_profile.verified_at,
+                    'verification_status': vendor_profile.verification_status,
+                }
+            }
+        })
+        
+    except User.DoesNotExist:
+        return Response(
+            {'error': 'Vendeur non trouvé'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Erreur approbation KYC: {str(e)}")
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_reject_vendor_kyc(request, vendor_id):
+    """Rejeter le KYC d'un vendeur"""
+    try:
+        user = User.objects.get(id=vendor_id)
+        
+        if not hasattr(user, 'vendor_profile'):
+            return Response(
+                {'error': 'Ce vendeur n\'a pas de profil vendeur'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        vendor_profile = user.vendor_profile
+        vendor_profile.status = 'rejected'
+        vendor_profile.verification_status = 'rejected'
+        if request.data.get('reason'):
+            vendor_profile.verification_notes = request.data.get('reason')
+        vendor_profile.save()
+        
+        return Response({
+            'message': 'KYC rejeté avec succès',
+            'vendor': {
+                'id': user.id,
+                'email': user.email,
+                'vendor_profile': {
+                    'status': vendor_profile.status,
+                    'verification_status': vendor_profile.verification_status,
+                }
+            }
+        })
+        
+    except User.DoesNotExist:
+        return Response(
+            {'error': 'Vendeur non trouvé'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Erreur rejet KYC: {str(e)}")
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )

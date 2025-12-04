@@ -67,6 +67,20 @@ COUNTRY_CHOICES = [
     ]
 AUTH_PROVIDERS ={'email':'email', 'google':'google', 'github':'github', 'facebook':'facebook'}
 
+# Status choices for vendor profile and verification
+STATUS_CHOICES = [
+    ('pending', 'En attente'),
+    ('approved', 'Approuvé'),
+    ('rejected', 'Rejeté'),
+    ('suspended', 'Suspendu'),
+]
+
+VERIFICATION_STATUS_CHOICES = [
+    ('pending', 'En attente'),
+    ('verified', 'Vérifié'),
+    ('rejected', 'Rejeté'),
+]
+
 class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = [
         ('buyer', 'Acheteur'),
@@ -218,9 +232,14 @@ class VendorProfile(models.Model):
     # === INFORMATIONS COMPLÉMENTAIRES ===
     has_existing_shop = models.CharField(max_length=3, choices=[('yes', 'Oui'), ('no', 'Non')], blank=True, null=True)
     vendor_type = models.CharField(max_length=20, choices=VENDOR_TYPE_CHOICES, blank=True, null=True)
+    business_license = models.CharField(max_length=255, blank=True, null=True)
     
+    # 🔥 AJOUT: Status fields that are missing
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    verification_status = models.CharField(max_length=20, choices=VERIFICATION_STATUS_CHOICES, default='pending')
     # === MÉTADONNÉES ===
     is_completed = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
