@@ -94,10 +94,41 @@ class Listing(models.Model):
         if quantity <= self.available_quantity:
             self.quantity_sold += quantity
             self.save()
+            was_out_of_stock = self.is_out_of_stock
             self.update_status_based_on_quantity()
+            if self.is_out_of_stock and not was_out_of_stock:
+                self.send_out_of_stock_notification()
             return True
         return False
-
+    def send_out_of_stock_notification(self):
+        """Envoyer une notification d'épuisement de stock"""
+        from notifications.models import Notification
+        
+        try:
+            Notification.objects.create(
+                user=self.user,
+                type='listing',
+                content=f'⚠️ Votre produit "{self.title}" est maintenant épuisé. Veuillez réapprovisionner.'
+            )
+            return True
+        except Exception as e:
+            print(f"Erreur lors de l'envoi de la notification: {e}")
+            return False
+    
+    def send_restock_notification(self):
+        """Envoyer une notification de réapprovisionnement"""
+        from notifications.models import Notification
+        
+        try:
+            Notification.objects.create(
+                user=self.user,
+                type='listing',
+                content=f'✅ Votre produit "{self.title}" a été réapprovisionné et est maintenant disponible.'
+            )
+            return True
+        except Exception as e:
+            print(f"Erreur lors de l'envoi de la notification: {e}")
+            return False
     def deactivate(self):
         self.status = 'expired'
         self.save()

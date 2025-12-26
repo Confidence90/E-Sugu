@@ -295,6 +295,7 @@ SOCIAL_AUTH_PASSWORD = config('SOCIAL_AUTH_PASSWORD')
 
 REST_USE_JWT = True
 REST_AUTH_TOKEN_MODEL = None
+# settings.py
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -302,10 +303,27 @@ LOGGING = {
         'console': {
             'class': 'logging.StreamHandler',
         },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': 'debug.log',
+            'level': 'DEBUG',
+        },
     },
-    'root': {
-        'handlers': ['console'],
-        'level': 'DEBUG',
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+        },
+        'users.views': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+        'google.auth': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
     },
 }
 SECURE_CROSS_ORIGIN_OPENER_POLICY = None  # Disable COOP for development
@@ -337,3 +355,5 @@ SOCIALACCOUNT_PROVIDERS = {
 # Variables Facebook (à mettre dans vos variables d'environnement)
 SOCIAL_AUTH_FACEBOOK_KEY = os.getenv('FACEBOOK_APP_ID', 'your_facebook_app_id')
 SOCIAL_AUTH_FACEBOOK_SECRET = os.getenv('FACEBOOK_APP_SECRET', 'your_facebook_app_secret')
+print(f"GOOGLE_CLIENT_ID: {GOOGLE_CLIENT_ID}")
+print(f"GOOGLE_CLIENT_ID type: {type(GOOGLE_CLIENT_ID)}")

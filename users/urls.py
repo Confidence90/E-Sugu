@@ -37,7 +37,8 @@ urlpatterns = [
     path('vendor/activate/', activate_vendor_status, name='vendor-activate'),
     path('vendor/create-profile/', create_vendor_profile, name='vendor-create-profile'),
     path('vendor/debug-user-info/', debug_user_info, name='vendor-debug-user-info'),
-    
+    path('vendor/notifications/', vendor_notifications, name='vendor-notifications'),
+
     # 🔥 AJOUT DES URLs MANQUANTES :
     path('check-admin-permission/', check_admin_permission, name='check-admin-permission'),
     path('check-listing-permission/', check_listing_permission, name='check-listing-permission'),
@@ -63,5 +64,8 @@ urlpatterns = [
     path('admin/vendors/<int:vendor_id>/status/', admin_update_vendor_status, name='admin-update-vendor-status'),
     path('admin/vendors/<int:vendor_id>/approve-kyc/', admin_approve_vendor_kyc, name='admin-approve-vendor-kyc'),
     path('admin/vendors/<int:vendor_id>/reject-kyc/', admin_reject_vendor_kyc, name='admin-reject-vendor-kyc'),
+    path('notifications/mark-all-read/', mark_all_notifications_read, name='mark-all-notifications-read'),
+    path('vendor/out-of-stock-alerts/', out_of_stock_alerts, name='out-of-stock-alerts'),
+
 
 ] + router.urls

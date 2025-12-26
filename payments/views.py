@@ -260,75 +260,116 @@ class TransactionView(APIView):
             )
 
 # payments/views.py - Dans PaymentConfirmationView
+# payments/views.py
 class PaymentConfirmationView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        logger.info(f"🔍 Confirmation paiement - User: {request.user.id}, Data: {request.data}")
         serializer = PaymentConfirmationSerializer(data=request.data)
-        if serializer.is_valid():
-            payment_intent_id = serializer.validated_data['payment_intent_id']
-            
-            try:
-                transactions = Transaction.objects.filter(
-                    stripe_payment_intent_id=payment_intent_id,
-                    buyer=request.user,
-                    status='pending' 
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        payment_intent_id = serializer.validated_data['payment_intent_id']
+
+        try:
+            # 🔥 Toujours filtrer uniquement les transactions en attente
+            transactions = Transaction.objects.filter(
+                stripe_payment_intent_id=payment_intent_id,
+                buyer=request.user,
+                status='pending'
+            )
+
+            logger.info(f"📊 Transactions en attente trouvées: {transactions.count()}")
+
+            if not transactions.exists():
+                logger.warning(f"⚠️ Aucune transaction en attente trouvée pour {payment_intent_id}")
+                return Response(
+                    {'error': 'Aucune transaction en attente trouvée'},
+                    status=status.HTTP_404_NOT_FOUND
                 )
+
+            # 🔥 Vérifier l'état Stripe
+            payment_intent = StripeService.retrieve_payment_intent(payment_intent_id)
+
+            if payment_intent.status != 'succeeded':
+                return Response({
+                    'status': payment_intent.status,
+                    'message': f"Paiement en statut: {payment_intent.status}"
+                }, status=status.HTTP_200_OK)
+
+            # 🔥 Paiement OK → traitement atomique
+            with db_transaction.atomic():
+
+                orders_created = []
+                order_numbers = []
                 
-                if not transactions.exists():
-                    return Response(
-                        {'error': 'Aucune transaction en attente trouvée'}, 
-                        status=status.HTTP_404_NOT_FOUND
-                    )
-                
-                payment_intent = StripeService.retrieve_payment_intent(payment_intent_id)
-                
-                if payment_intent.status == 'succeeded':
-                    with db_transaction.atomic():
-                        # 🔥 CRÉATION DES COMMANDES
-                        orders_created = []
-                        for transaction in transactions:
-                            # Mettre à jour le statut de la transaction
-                            transaction.status = 'completed'
-                            transaction.save()
-                            
-                            # Créer la commande associée
+                for transaction in transactions:
+                    # Mettre la transaction en completed
+                    transaction.status = 'completed'
+                    transaction.save()
+
+                    # 🎯 CASE 1 : Une commande existe déjà → on confirme juste
+                    if transaction.order:
+                        transaction.order.status = 'confirmed'
+                        transaction.order.save()
+
+                        orders_created.append(transaction.order)
+                        order_numbers.append(transaction.order.order_number)
+
+                    else:
+                        # 🎯 CASE 2 : Créer une nouvelle commande
+                        try:
                             order = transaction.create_order_after_payment()
+                        
+
                             if order:
                                 orders_created.append(order)
-                            
-                            # Mettre à jour le statut de l'annonce
-                            transaction.listing.status = 'sold'
-                            transaction.listing.save()
-                        
-                        # Vider le panier
-                        try:
-                            panier = Panier.objects.get(user=request.user)
-                            panier.items.all().delete()
-                        except Panier.DoesNotExist:
-                            pass
-                    
-                    return Response({
-                        'status': 'succeeded',
-                        'message': f'Paiement confirmé - {len(orders_created)} commande(s) créée(s)',
-                        'transactions_completed': transactions.count(),
-                        'orders_created': [order.id for order in orders_created],
-                        'panier_vide': True
-                    }, status=status.HTTP_200_OK)
-                else:
-                    return Response({
-                        'status': payment_intent.status,
-                        'message': f'Paiement en statut: {payment_intent.status}'
-                    }, status=status.HTTP_200_OK)
-                
-            except Exception as e:
-                logger.error(f"❌ Erreur confirmation paiement: {e}")
-                return Response(
-                    {'error': f'Erreur de confirmation: {str(e)}'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                                order_numbers.append(order.order_number)
+                                logger.info(f"✅ Commande créée #{order.id}")
+                            else:
+                                logger.error(f"❌ Impossible de créer une commande pour transaction {transaction.id}")
+                        except Exception as e:
+                            logger.error(f"❌ Erreur création commande: {e}")
+                            logger.info("➡️ Tentative fallback…")
+                            order = transaction.create_order_fallback()
+                            continue
+                    # 🔥 Mise à jour du listing vendu
+                    try:
+                        transaction.listing.mark_as_sold(transaction.quantity)
+                    except Exception as e:
+                        logger.error(f"❌ Erreur mise à jour annonce: {e}")
+
+                # 🔥 Vider le panier
+                try:
+                    panier = Panier.objects.get(user=request.user)
+                    items_removed = panier.items.count()
+                    panier.items.all().delete()
+                    panier_vide = True
+                    logger.info(f"🛒 Panier vidé ({items_removed} articles)")
+                except Panier.DoesNotExist:
+                    panier_vide = False
+                    items_removed = 0
+                    logger.warning("⚠️ Aucun panier trouvé")
+
+            # 🔥 Réponse complète
+            return Response({
+                'status': 'succeeded',
+                'message': f'Paiement confirmé - {len(orders_created)} commande(s) traitée(s)',
+                'transactions_completed': transactions.count(),
+                'orders_created': [order.id for order in orders_created],
+                'orders_numbers': order_numbers,
+                'panier_vide': panier_vide,
+                'items_removed': items_removed
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"❌ Erreur confirmation paiement: {e}", exc_info=True)
+            return Response(
+                {'error': f'Erreur interne: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class TransactionDetailView(APIView):
     permission_classes = [IsAuthenticated]

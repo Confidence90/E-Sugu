@@ -5,6 +5,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from .models import Listing, Image, ListingView
 from commandes.models import Order
+from rest_framework.permissions import IsAdminUser
 from rest_framework.exceptions import ValidationError
 from .serializers import ListingSerializer, ImageUploadSerializer, ListingCreateSerializer, OrderCreateSerializer
 from categories.models import Category
@@ -201,16 +202,19 @@ class ListingViewSet(viewsets.ModelViewSet):
                 {'error': 'Quantité invalide'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+        # Vérifier si le produit était épuisé avant le réapprovisionnement
+        was_out_of_stock = listing.is_out_of_stock
         listing.restock(new_quantity)
         
         # 🔥 NOTIFICATION si le produit était épuisé et est maintenant disponible
-        if listing.status == 'active' and listing.available_quantity > 0:
-            Notification.objects.create(
-                user=listing.user,
-                type='listing',
-                content=f'Votre produit "{listing.title}" est maintenant disponible en stock.'
-            )
+        #if listing.status == 'active' and listing.available_quantity > 0:
+        #    Notification.objects.create(
+        #        user=listing.user,
+        #        type='listing',
+         #       content=f'Votre produit "{listing.title}" est maintenant disponible en stock.'
+        #    )
+        if was_out_of_stock and listing.available_quantity > 0:
+            listing.send_restock_notification()
         
         serializer = self.get_serializer(listing)
         return Response(serializer.data)
@@ -407,3 +411,147 @@ def test_tracking_view(request, listing_id):
     except Exception as e:
         logger.error(f"Erreur test tracking: {str(e)}")
         return Response({'error': 'Erreur interne'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+# listings/views.py - AJOUTEZ CES VUES
+from django.db.models import Count, Sum, Avg, Q, F
+from django.utils import timezone
+from datetime import timedelta
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_products_stats(request):
+    """Statistiques des produits pour l'administration"""
+    try:
+        today = timezone.now()
+        last_30_days = today - timedelta(days=30)
+        
+        # Statistiques de base
+        total_products = Listing.objects.count()
+        active_products = Listing.objects.filter(status='active').count()
+        out_of_stock = Listing.objects.filter(status='out_of_stock').count()
+        sold_out = Listing.objects.filter(status='sold').count()
+        featured_products = Listing.objects.filter(is_featured=True).count()
+        
+        # Produits créés aujourd'hui
+        new_products_today = Listing.objects.filter(created_at__date=today.date()).count()
+        
+        # Ventes et revenus (30 derniers jours)
+        recent_orders = Order.objects.filter(
+            created_at__gte=last_30_days,
+            status='completed'
+        )
+        total_sales = recent_orders.count()
+        total_revenue = recent_orders.aggregate(
+            total=Sum('total_price')
+        )['total'] or 0
+        
+        # Prix moyen
+        average_price = Listing.objects.filter(status='active').aggregate(
+            avg=Avg('price')
+        )['avg'] or 0
+        
+        # Catégorie la plus vue
+        most_viewed_category = Listing.objects.values(
+            'category__name'
+        ).annotate(
+            total_views=Sum('views_count')
+        ).order_by('-total_views').first()
+        
+        stats = {
+            'total_products': total_products,
+            'active_products': active_products,
+            'out_of_stock': out_of_stock,
+            'sold_out': sold_out,
+            'featured_products': featured_products,
+            'new_products_today': new_products_today,
+            'total_sales': total_sales,
+            'total_revenue': float(total_revenue),
+            'average_price': float(average_price),
+            'most_viewed_category': {
+                'category': most_viewed_category['category__name'] if most_viewed_category else 'Aucune',
+                'views': most_viewed_category['total_views'] if most_viewed_category else 0
+            }
+        }
+        
+        return Response(stats)
+        
+    except Exception as e:
+        logger.error(f"Erreur statistiques produits: {str(e)}")
+        return Response(
+            {'error': 'Erreur lors du calcul des statistiques'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_bulk_update_products(request):
+    """Mise à jour en masse des produits"""
+    try:
+        product_ids = request.data.get('product_ids', [])
+        update_data = request.data.copy()
+        update_data.pop('product_ids', None)
+        
+        if not product_ids:
+            return Response(
+                {'error': 'Aucun produit sélectionné'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Mise à jour sécurisée
+        products = Listing.objects.filter(id__in=product_ids)
+        
+        # Empêcher la modification des champs sensibles
+        restricted_fields = ['user', 'created_at']
+        for field in restricted_fields:
+            if field in update_data:
+                return Response(
+                    {'error': f'Vous ne pouvez pas modifier {field}'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        # Mettre à jour les produits
+        updated_count = products.update(**update_data)
+        
+        return Response({
+            'message': f'{updated_count} produit(s) mis à jour',
+            'count': updated_count
+        })
+        
+    except Exception as e:
+        logger.error(f"Erreur mise à jour en masse: {str(e)}")
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def admin_bulk_delete_products(request):
+    """Suppression en masse des produits"""
+    try:
+        product_ids = request.data.get('product_ids', [])
+        
+        if not product_ids:
+            return Response(
+                {'error': 'Aucun produit sélectionné'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        products = Listing.objects.filter(id__in=product_ids)
+        deleted_count = products.count()
+        
+        # Supprimer les produits
+        products.delete()
+        
+        return Response({
+            'message': f'{deleted_count} produit(s) supprimé(s)',
+            'count': deleted_count
+        })
+        
+    except Exception as e:
+        logger.error(f"Erreur suppression en masse: {str(e)}")
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    

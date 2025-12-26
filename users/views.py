@@ -2,6 +2,9 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework import viewsets
 from django.db.models import F
+from google.auth.transport.requests import Request as GoogleAuthRequest
+
+
 from google.auth.transport import requests
 from google.oauth2 import id_token
 from django.utils import timezone
@@ -178,12 +181,22 @@ class LogoutView(GenericAPIView):
     permission_classes=[IsAuthenticated]
 
     def post(self, request):
-        logger.info(f"Déconnexion pour {request.user.email}", extra={'user_id': request.user.id})
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response({'message': 'Déconnexion réussie ✅'}, status=status.HTTP_200_OK)
-
+            # 🔥 CORRECTION: Ajouter un log pour voir qui appelle logout
+            logger.info(f"🚨 LOGOUT APPELÉ pour {request.user.email} - Headers: {dict(request.headers)}")
+            
+            # 🔥 CORRECTION: Vérifier si c'est un appel depuis Google login
+            referer = request.headers.get('Referer', '')
+            user_agent = request.headers.get('User-Agent', '')
+            
+            if 'google' in referer.lower() or 'accounts.google.com' in referer:
+                logger.warning(f"⚠️ Tentative de logout depuis Google - Bloquée pour {request.user.email}")
+                return Response({'message': 'Logout non autorisé depuis Google login'}, status=status.HTTP_403_FORBIDDEN)
+            
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            
+            return Response({'message': 'Déconnexion réussie ✅'}, status=status.HTTP_200_OK)
 
 
 
@@ -319,57 +332,230 @@ class TestAuthenticationView(GenericAPIView):
         })
 
 #@csrf_exempt
+# users/views.py
+# users/views.py - MODIFIEZ GoogleLoginView
+# users/views.py - MODIFIEZ GoogleLoginView pour ajouter plus de logs
 class GoogleLoginView(APIView):
     permission_classes = [AllowAny]
+    
     def post(self, request, *args, **kwargs):
-        logger.debug("Requête reçue: %s", request.data)
-        id_token_str = request.data.get('id_token')
+        logger.debug("🔍 Requête Google reçue: %s", request.data)
+        
+        # 🔥 CORRECTION: Accepter multiple formats
+        id_token_str = (
+            request.data.get('id_token') or 
+            request.data.get('credential') or
+            request.data.get('token')
+        )
+        
         if not id_token_str:
-            logger.error("id_token manquant")
-            return Response({'error': 'id_token requis'}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error("❌ Token manquant dans: %s", request.data)
+            return Response(
+                {'error': 'Token Google requis. Envoyez id_token ou credential.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        logger.info("📝 Token reçu (longueur: %d): %s...", len(id_token_str), id_token_str[:50])
         
         try:
-            # Valider l'ID token avec Google
-            id_info = id_token.verify_oauth2_token(
-                id_token_str, requests.Request(), settings.GOOGLE_CLIENT_ID
-            )
-            logger.debug("ID token info: %s", id_info)
+            GOOGLE_CLIENT_ID = settings.GOOGLE_CLIENT_ID
             
-            # Vérifier l'émetteur et l'audience
-            if id_info['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
-                return Response({'error': 'Émetteur de jeton non valide'}, status=status.HTTP_400_BAD_REQUEST)
-            if id_info['aud'] != settings.GOOGLE_CLIENT_ID:
-                return Response({'error': 'Discordance d\'audience'}, status=status.HTTP_400_BAD_REQUEST)
+            logger.info("🔑 Client ID configuré: %s", GOOGLE_CLIENT_ID)
             
-            # Récupérer ou créer l'utilisateur
-            email = id_info['email']
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    'first_name': id_info.get('given_name', ''),
-                    'last_name': id_info.get('family_name', ''),
-                    'username': email,
-                    'is_verified': True,
-                    'auth_provider': 'google'
-                }
-            )
-            if not created:
+            if not GOOGLE_CLIENT_ID:
+                logger.error("❌ GOOGLE_CLIENT_ID non configuré")
+                return Response(
+                    {'error': 'Configuration serveur manquante'}, 
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # 🔥 ÉTAPE 1: Décoder sans vérification pour voir le contenu
+            from google.auth import jwt
+            
+            try:
+                # Essayer de décoder sans vérification d'abord pour le débogage
+                decoded = jwt.decode(id_token_str, verify=False)
+                logger.info("✅ Token décodé (sans vérif):")
+                logger.info("   - Email: %s", decoded.get('email'))
+                logger.info("   - Aud: %s", decoded.get('aud'))
+                logger.info("   - Iss: %s", decoded.get('iss'))
+                logger.info("   - Exp: %s", decoded.get('exp'))
+                logger.info("   - AZP: %s", decoded.get('azp'))
+            except Exception as e:
+                logger.error("❌ Impossible de décoder le token: %s", str(e))
+            
+            # 🔥 ÉTAPE 2: Vérifier avec Google
+            logger.info("🔄 Validation du token avec Google...")
+            
+            try:
+                id_info = id_token.verify_oauth2_token(
+                    id_token_str, 
+                    GoogleAuthRequest(),
+                    GOOGLE_CLIENT_ID,
+                    clock_skew_in_seconds=60  # Plus de tolérance
+                )
+                logger.info("✅ Token validé avec succès pour email: %s", id_info.get('email'))
+            except ValueError as e:
+                logger.error("❌ Erreur validation token Google: %s", str(e))
+                # Essayer avec l'audience alternative (azp)
+                try:
+                    azp = decoded.get('azp') if 'decoded' in locals() else None
+                    if azp and azp != GOOGLE_CLIENT_ID:
+                        logger.info("🔄 Tentative avec azp (authorized party): %s", azp)
+                        id_info = id_token.verify_oauth2_token(
+                            id_token_str, 
+                            GoogleAuthRequest(),
+                            azp,  # Essayer avec azp
+                            clock_skew_in_seconds=60
+                        )
+                        logger.info("✅ Token validé avec azp: %s", azp)
+                    else:
+                        raise e
+                except Exception as e2:
+                    logger.error("❌ Échec validation même avec azp: %s", str(e2))
+                    return Response(
+                        {'error': f'Token Google invalide: {str(e)}'}, 
+                        status=status.HTTP_401_UNAUTHORIZED
+                    )
+            
+            # 🔥 CORRECTION: Vérifier l'audience multiple
+            allowed_audiences = [GOOGLE_CLIENT_ID]
+            
+            # Ajouter l'azp comme audience possible
+            if 'azp' in id_info and id_info['azp'] not in allowed_audiences:
+                allowed_audiences.append(id_info['azp'])
+                logger.info("➕ Ajout de azp aux audiences autorisées: %s", id_info['azp'])
+            
+            if id_info['aud'] not in allowed_audiences:
+                logger.error("❌ Audience mismatch:")
+                logger.error("   - Attendu: %s", allowed_audiences)
+                logger.error("   - Reçu: %s", id_info['aud'])
+                logger.error("   - AZP: %s", id_info.get('azp'))
+                
+                return Response(
+                    {
+                        'error': 'Discordance de Client ID',
+                        'expected': allowed_audiences,
+                        'received': id_info['aud'],
+                        'azp': id_info.get('azp'),
+                        'tip': 'Vérifiez les audiences autorisées'
+                    }, 
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Vérifier l'émetteur
+            allowed_issuers = [
+                'accounts.google.com', 
+                'https://accounts.google.com',
+                'http://accounts.google.com'
+            ]
+            
+            if id_info['iss'] not in allowed_issuers:
+                logger.error("❌ Issuer invalide: %s", id_info['iss'])
+                return Response(
+                    {'error': f'Émetteur non autorisé: {id_info["iss"]}'}, 
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Vérifier l'expiration
+            import time
+            current_time = int(time.time())
+            if id_info['exp'] < current_time:
+                logger.error("❌ Token expiré: exp=%s, current=%s", id_info['exp'], current_time)
+                return Response(
+                    {'error': 'Token expiré'}, 
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Récupérer l'email
+            email = id_info.get('email')
+            if not email:
+                logger.error("❌ Pas d'email dans le token")
+                return Response(
+                    {'error': 'Email non fourni par Google'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            logger.info("👤 Recherche/création utilisateur pour: %s", email)
+            
+            # 🔥 CORRECTION: Logique améliorée pour récupérer/créer l'utilisateur
+            try:
+                user = User.objects.get(email=email)
+                created = False
+                logger.info("✅ Utilisateur existant trouvé: %s", email)
+                
+                # Mettre à jour les informations
+                if not user.first_name and 'given_name' in id_info:
+                    user.first_name = id_info['given_name']
+                if not user.last_name and 'family_name' in id_info:
+                    user.last_name = id_info['family_name']
                 user.auth_provider = 'google'
                 user.is_verified = True
+                user.is_active = True
                 user.save()
+                
+            except User.DoesNotExist:
+                # Créer un nouvel utilisateur
+                username = email.split('@')[0]
+                
+                # S'assurer que le username est unique
+                base_username = username
+                counter = 1
+                while User.objects.filter(username=username).exists():
+                    username = f"{base_username}_{counter}"
+                    counter += 1
+                
+                user = User.objects.create(
+                    email=email,
+                    username=username,
+                    first_name=id_info.get('given_name', ''),
+                    last_name=id_info.get('family_name', ''),
+                    is_verified=True,
+                    is_active=True,
+                    auth_provider='google'
+                )
+                created = True
+                logger.info("✅ Nouvel utilisateur créé: %s", email)
             
-            # Générer les tokens JWT
+            # 🔥 CORRECTION: Générer les tokens
             refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+            
+            logger.info("🎉 Connexion réussie pour: %s (new: %s)", email, created)
+            
             return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'email': email,
-                'user': UserSerializer(user).data
+                'refresh': refresh_token,
+                'access': access_token,
+                'email': user.email,
+                'full_name': user.get_full_name or f"{user.first_name} {user.last_name}".strip(),
+                'user_id': user.id,  # 🔥 AJOUTER user_id
+                'id': user.id,       # 🔥 AJOUTER id aussi (pour compatibilité)
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'is_new_user': created,
+                'message': 'Connexion Google réussie'
             }, status=status.HTTP_200_OK)
-        
-        except ValueError as e:
-            logger.error("Erreur de validation de l'ID token: %s", str(e))
-            return Response({'error': f'Jeton invalide: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Exception as e:
+            logger.error("💥 Erreur inattendue: %s", str(e), exc_info=True)
+            return Response(
+                {'error': f'Erreur serveur: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def google_config_debug(request):
+    """Debug endpoint pour vérifier la configuration Google"""
+    return Response({
+        'google_client_id': settings.GOOGLE_CLIENT_ID,
+        'google_client_id_exists': bool(settings.GOOGLE_CLIENT_ID),
+        'allowed_hosts': settings.ALLOWED_HOSTS,
+        'debug': settings.DEBUG,
+        'cors_allowed_origins': settings.CORS_ALLOWED_ORIGINS[:3] if settings.CORS_ALLOWED_ORIGINS else [],
+    })
+
 #@csrf_exempt 
 class ResendOTPView(APIView):
     permission_classes = [AllowAny]
@@ -2230,44 +2416,57 @@ def admin_dashboard_stats(request):
     from commandes.models import Order
     from transactions.models import Transaction
     
-    today = timezone.now()
-    last_30_days = today - timedelta(days=30)
-    
-    # Utilisateurs
-    total_users = User.objects.count()
-    active_users = User.objects.filter(is_active=True).count()
-    sellers_count = User.objects.filter(role='seller', is_active=True).count()
-    new_users_today = User.objects.filter(created_at__date=today.date()).count()
-    
-    # Produits
-    products_count = Listing.objects.filter(status='active').count()
-    
-    # Commandes et revenus
-    recent_orders_count = Order.objects.filter(created_at__gte=last_30_days).count()
-    total_revenue = Transaction.objects.filter(
-        status='success',
-        created_at__gte=last_30_days
-    ).aggregate(total=Sum('amount'))['total'] or 0
-    
-    # Distribution par rôle
-    role_distribution = {
-        'buyer': User.objects.filter(role='buyer').count(),
-        'seller': User.objects.filter(role='seller').count(),
-        'admin': User.objects.filter(role='admin').count(),
-    }
-    
-    stats = {
-        'total_users': total_users,
-        'active_users': active_users,
-        'sellers_count': sellers_count,
-        'new_users_today': new_users_today,
-        'products_count': products_count,
-        'recent_orders_count': recent_orders_count,
-        'total_revenue': float(total_revenue),
-        'role_distribution': role_distribution,
-    }
-    
-    return Response(stats)
+    try:
+        today = timezone.now()
+        last_30_days = today - timedelta(days=30)
+        
+        # Utilisateurs
+        total_users = User.objects.count()
+        active_users = User.objects.filter(is_active=True).count()
+        sellers_count = User.objects.filter(role='seller', is_active=True).count()
+        new_users_today = User.objects.filter(created_at__date=today.date()).count()
+        
+        # Produits
+        products_count = Listing.objects.filter(status='active').count()
+        
+        # Commandes et revenus
+        recent_orders_count = Order.objects.filter(created_at__gte=last_30_days).count()
+        
+        total_revenue = 0
+        try:
+            total_revenue = Transaction.objects.filter(
+                status='success',
+                created_at__gte=last_30_days
+            ).aggregate(total=Sum('amount'))['total'] or 0
+        except Exception as e:
+            logger.error(f"Erreur calcul revenus: {str(e)}")
+        
+        # Distribution par rôle
+        role_distribution = {
+            'buyer': User.objects.filter(role='buyer').count(),
+            'seller': User.objects.filter(role='seller').count(),
+            'admin': User.objects.filter(role='admin').count(),
+        }
+        
+        stats = {
+            'total_users': total_users,
+            'active_users': active_users,
+            'sellers_count': sellers_count,
+            'new_users_today': new_users_today,
+            'products_count': products_count,
+            'recent_orders_count': recent_orders_count,
+            'total_revenue': float(total_revenue),
+            'role_distribution': role_distribution,
+        }
+        
+        return Response(stats)
+        
+    except Exception as e:
+        logger.error(f"Erreur dashboard admin: {str(e)}")
+        return Response(
+            {'error': 'Erreur lors du calcul des statistiques'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
@@ -2726,17 +2925,78 @@ def admin_vendors_list(request):
             Q(phone__icontains=search)
         )
     
-    # CORRECTION: Simplifier les annotations pour éviter l'erreur de types mixtes
-    from django.db.models import Count, Sum, Avg
+    # Sous-requêtes pour les statistiques - CORRECTION: Ajouter output_field
+    from django.db.models import Subquery, OuterRef, IntegerField, DecimalField
+    from django.db.models.functions import Coalesce
     
-    # Annoter directement sans sous-requêtes complexes
+    # Nombre de produits
+    product_count_subquery = Listing.objects.filter(
+        user=OuterRef('pk')
+    ).values('user').annotate(
+        count=Count('id')
+    ).values('count')[:1]
+    
+    # Nombre de produits actifs
+    active_products_subquery = Listing.objects.filter(
+        user=OuterRef('pk'),
+        status='active'
+    ).values('user').annotate(
+        count=Count('id')
+    ).values('count')[:1]
+    
+    # Chiffre d'affaires - CORRECTION: Spécifier DecimalField pour Sum
+    from django.db.models import F, ExpressionWrapper, FloatField
+    
+    revenue_subquery = Order.objects.filter(
+        listing__user=OuterRef('pk'),
+        status='completed'
+    ).values('listing__user').annotate(
+        total=Sum('total_price')
+    ).values('total')[:1]
+    
+    # Nombre de ventes
+    sales_count_subquery = Order.objects.filter(
+        listing__user=OuterRef('pk'),
+        status='completed'
+    ).values('listing__user').annotate(
+        count=Count('id')
+    ).values('count')[:1]
+    
+    # Note moyenne - CORRECTION: Spécifier FloatField pour Avg
+    rating_subquery = Review.objects.filter(
+        reviewed=OuterRef('pk')
+    ).values('reviewed').annotate(
+        avg=Avg('rating')
+    ).values('avg')[:1]
+    from django.db.models import Value
+    # Annoter les utilisateurs avec les statistiques - CORRECTION: Ajouter output_field
     users = users.annotate(
-        product_count=Count('listings', distinct=True),
-        active_product_count=Count('listings', distinct=True, filter=Q(listings__status='active')),
-        total_revenue=Sum('listings__orders__total_price', filter=Q(listings__orders__status='completed')),
-        sales_count=Count('listings__orders', distinct=True, filter=Q(listings__orders__status='completed')),
-        avg_rating=Avg('received_reviews__rating')
-    )
+    product_count=Coalesce(
+        Subquery(product_count_subquery, output_field=IntegerField()),
+        Value(0, output_field=IntegerField())
+    ),
+
+    active_product_count=Coalesce(
+        Subquery(active_products_subquery, output_field=IntegerField()),
+        Value(0, output_field=IntegerField())
+    ),
+
+    total_revenue=Coalesce(
+        Subquery(revenue_subquery, output_field=DecimalField(max_digits=10, decimal_places=2)),
+        Value(0, output_field=DecimalField(max_digits=10, decimal_places=2))
+    ),
+
+    sales_count=Coalesce(
+        Subquery(sales_count_subquery, output_field=IntegerField()),
+        Value(0, output_field=IntegerField())
+    ),
+
+    avg_rating=Coalesce(
+        Subquery(rating_subquery, output_field=FloatField()),
+        Value(0.0, output_field=FloatField())
+    ),
+)
+
     
     order_by = request.GET.get('order_by', '-created_at')
     if order_by.lstrip('-') in ['email', 'first_name', 'last_name', 'created_at', 'last_login', 'total_revenue']:
@@ -2778,40 +3038,28 @@ def admin_vendors_list(request):
         
         # Ajouter le profil vendeur si existant
         if hasattr(user, 'vendor_profile'):
-            vendor_profile = user.vendor_profile
-            
-            # CORRECTION: Gérer verified_at de manière sécurisée
-            verified_at = None
-            try:
-                if hasattr(vendor_profile, 'verified_at') and vendor_profile.verified_at:
-                    verified_at = vendor_profile.verified_at.isoformat()
-            except AttributeError:
-                pass  # Le champ n'existe pas dans la base de données
-            
             vendor_data['vendor_profile'] = {
-                'id': vendor_profile.id,
-                'shop_name': vendor_profile.shop_name,
-                'contact_name': vendor_profile.contact_name,
-                'contact_email': vendor_profile.contact_email,
-                'contact_phone': vendor_profile.contact_phone,
-                'business_license': vendor_profile.business_license,
-                'tax_id': vendor_profile.tax_id,
-                'account_type': vendor_profile.account_type,
-                'is_completed': vendor_profile.is_completed,
-                'verified_at': verified_at,  # Utiliser la valeur sécurisée
-                'status': vendor_profile.status,
-                'verification_status': vendor_profile.verification_status,
-                'created_at': vendor_profile.created_at.isoformat() if vendor_profile.created_at else None,
-                'updated_at': vendor_profile.updated_at.isoformat() if vendor_profile.updated_at else None,
+                'id': user.vendor_profile.id,
+                'shop_name': user.vendor_profile.shop_name,
+                'contact_name': user.vendor_profile.contact_name,
+                'contact_email': user.vendor_profile.contact_email,
+                'contact_phone': user.vendor_profile.contact_phone,
+                'business_license': user.vendor_profile.business_license,
+                'tax_id': user.vendor_profile.tax_id,
+                'account_type': user.vendor_profile.account_type,
+                'is_completed': user.vendor_profile.is_completed,
+                'verified_at': user.vendor_profile.verified_at.isoformat() if user.vendor_profile.verified_at else None,
+                'status': user.vendor_profile.status,
+                'verification_status': user.vendor_profile.verification_status,
+                'created_at': user.vendor_profile.created_at.isoformat() if user.vendor_profile.created_at else None,
+                'updated_at': user.vendor_profile.updated_at.isoformat() if user.vendor_profile.updated_at else None,
             }
-        else:
-            vendor_data['vendor_profile'] = None
         
-        # Ajouter les statistiques - CORRECTION: gérer les valeurs None
+        # Ajouter les statistiques - CORRECTION: Convertir les types
         vendor_data['stats'] = {
-            'total_products': user.product_count or 0,
-            'active_products': user.active_product_count or 0,
-            'total_sales': user.sales_count or 0,
+            'total_products': user.product_count,
+            'active_products': user.active_product_count,
+            'total_sales': user.sales_count,
             'total_revenue': float(user.total_revenue or 0),
             'avg_rating': float(user.avg_rating or 0),
             'total_reviews': Review.objects.filter(reviewed=user).count(),
@@ -3036,3 +3284,139 @@ def admin_reject_vendor_kyc(request, vendor_id):
             {'error': str(e)},
             status=status.HTTP_400_BAD_REQUEST
         )
+ # users/views.py
+
+# users/views.py - CORRECTION de vendor_notifications
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def vendor_notifications(request):
+    """Récupérer les notifications spécifiques au vendeur"""
+    user = request.user
+    
+    # Vérifier si c'est un vendeur
+    if not (user.is_seller or hasattr(user, 'vendor_profile')):
+        return Response(
+            {'error': 'Accès réservé aux vendeurs'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    # Récupérer les notifications
+    from notifications.models import Notification
+    notifications = Notification.objects.filter(user=user).order_by('-created_at')
+    
+    # Pagination
+    page = int(request.GET.get('page', 1))
+    page_size = int(request.GET.get('page_size', 50))
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    
+    paginated_notifications = notifications[start_index:end_index]
+    
+    # Serializer personnalisé pour les notifications vendeur
+    notifications_data = []
+    for notif in paginated_notifications:
+        notifications_data.append({
+            'id': notif.id,
+            'type': notif.type,
+            'content': notif.content,
+            'is_read': notif.is_read,
+            'created_at': notif.created_at,
+            'time_ago': format_relative_time(notif.created_at)
+        })
+    
+    # Statistiques
+    unread_count = Notification.objects.filter(user=user, is_read=False).count()
+    out_of_stock_count = Notification.objects.filter(
+        user=user,
+        type='listing',
+        content__icontains='épuisé'
+    ).count()
+    
+    # 🔥 CORRECTION: Retourner un format plus standard
+    return Response({
+        'count': notifications.count(),
+        'next': None if end_index >= notifications.count() else page + 1,
+        'previous': None if page <= 1 else page - 1,
+        'results': notifications_data,
+        'stats': {
+            'total': notifications.count(),
+            'unread': unread_count,
+            'out_of_stock_alerts': out_of_stock_count
+        }
+    })
+# users/views.py
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_all_notifications_read(request):
+    """Marquer toutes les notifications comme lues"""
+    from notifications.models import Notification
+    
+    updated = Notification.objects.filter(
+        user=request.user,
+        is_read=False
+    ).update(is_read=True)
+    
+    return Response({
+        'message': f'{updated} notification(s) marquée(s) comme lue(s)',
+        'count': updated
+    })   
+# users/views.py
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def out_of_stock_alerts(request):
+    """Récupérer uniquement les alertes d'épuisement de stock"""
+    user = request.user
+    
+    if not (user.is_seller or hasattr(user, 'vendor_profile')):
+        return Response(
+            {'error': 'Accès réservé aux vendeurs'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    from notifications.models import Notification
+    from listings.models import Listing
+    
+    # Récupérer les alertes d'épuisement
+    out_of_stock_alerts = Notification.objects.filter(
+        user=user,
+        type='listing',
+        content__icontains='épuisé'
+    ).order_by('-created_at')
+    
+    # Récupérer les produits épuisés actuels
+    out_of_stock_products = Listing.objects.filter(
+        user=user,
+        status='out_of_stock'
+    ).select_related('category')
+    
+    alerts_data = []
+    for alert in out_of_stock_alerts:
+        alerts_data.append({
+            'id': alert.id,
+            'content': alert.content,
+            'is_read': alert.is_read,
+            'created_at': alert.created_at,
+            'time_ago': format_relative_time(alert.created_at)
+        })
+    
+    products_data = []
+    for product in out_of_stock_products:
+        products_data.append({
+            'id': product.id,
+            'title': product.title,
+            'category': product.category.name if product.category else 'Non catégorisé',
+            'price': float(product.price),
+            'available_quantity': product.available_quantity,
+            'status': product.status,
+            'last_viewed': product.last_viewed
+        })
+    
+    return Response({
+        'alerts': alerts_data,
+        'out_of_stock_products': products_data,
+        'total_alerts': len(alerts_data),
+        'total_out_of_stock': len(products_data)
+    })
+

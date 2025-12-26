@@ -1,8 +1,14 @@
 from django.db import models
+from django.utils import timezone
 from users.models import User
 from listings.models import Listing
 from decimal import Decimal
 from notifications.models import Notification
+from commandes.models import Order, OrderItem
+import logging
+
+logger = logging.getLogger(__name__)
+
 class Transaction(models.Model):
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='transactions')
     buyer = models.ForeignKey(
@@ -100,28 +106,100 @@ class Transaction(models.Model):
         from commandes.models import Order, OrderItem
         
         if self.status == 'completed' and not self.order:
-            # Créer la commande
-            order = Order.objects.create(
-                user=self.buyer,
-                total_price=self.total_amount,
-                status='confirmed'  # Commande confirmée après paiement
-            )
-            
-            # Créer l'item de commande
-            OrderItem.objects.create(
-                order=order,
-                listing=self.listing,
-                quantity=self.quantity,
-                price=self.amount
-            )
-            
-            self.order = order
-            self.save()
-            
-            Notification.objects.create(
-                user=self.seller,
-                type='order',
-                content=f'Nouvelle commande #{order.id} pour "{self.listing.title}"'
-            )
-            return order
+            try:
+                logger.info(f"🔄 Création de commande pour transaction {self.id}")
+                date_str = timezone.now().strftime('%y%m%d%H%M')  # Format plus court
+                order_number = f"ORD-{self.id}-{date_str}"
+                # Créer la commande
+                order = Order.objects.create(
+                    buyer=self.buyer,
+                    user=self.buyer, 
+                    listing=self.listing, 
+                    quantity=self.quantity,  
+                    total_price=self.total_amount,
+                    status='confirmed',  # Commande confirmée après paiemen     # 🔥 AJOUTER user aussi si nécessaire
+                    order_number=order_number,
+                    shipping_address="À définir",  # Valeur par défaut
+                    customer_notes="Paiement en ligne"
+                )
+                
+                # Créer l'item de commande
+                OrderItem.objects.create(
+                    order=order,
+                    listing=self.listing,
+                    quantity=self.quantity,
+                    price=self.amount
+                )
+                self.listing.mark_as_sold(self.quantity)
+                self.order = order
+                self.save()
+                from notifications.models import Notification
+                Notification.objects.create(
+                    user=self.seller,
+                    type='order',
+                    content=f'Nouvelle commande #{order.id} pour "{self.listing.title}"'
+                )
+                logger.info(f"✅ Commande #{order.id} créée pour transaction {self.id}")
+                return order
+            except Exception as e:
+                logger.error(f"❌ Erreur création commande: {e}")
+                # 🔥 SOLUTION DE FALLBACK
+                return self.create_order_fallback()
         return self.order
+    
+def create_order_fallback(self):
+    """Approche simple pour créer une commande (fallback)"""
+    try:
+        # Format très court pour order_number
+        order_number = f"ORD-{self.id}"
+        
+        # Créer avec seulement les champs absolument requis
+        order = Order.objects.create(
+            buyer=self.buyer,
+            user=self.buyer,
+            listing=self.listing,
+            quantity=self.quantity,
+            total_price=self.total_amount,
+            status='confirmed',
+            order_number=order_number
+        )
+        
+        # Créer OrderItem séparément
+        OrderItem.objects.create(
+            order=order,
+            listing=self.listing,
+            quantity=self.quantity,
+            price=self.amount
+        )
+        
+        self.order = order
+        self.save()
+        logger.info(f"✅ Commande fallback #{order.id} créée")
+        return order
+        
+    except Exception as e:
+        logger.error(f"❌ Échec création fallback: {e}")
+        return None
+    
+#def create_order_simple(self):
+    """Approche simple pour créer une commande"""
+#    try:
+        # Créer avec seulement les champs absolument requis
+#        order = Order.objects.create(
+#            buyer_id=self.buyer.id,
+#           user_id=self.buyer.id,  # 🔥 NE PAS OUBLIER user !
+#            listing_id=self.listing.id,
+#            quantity=self.quantity,
+ #           total_price=self.total_amount,
+#            status='confirmed',
+#            order_number=f"FALLBACK-{self.id}"
+#        )
+        
+#       self.order = order
+#        self.save()
+ #       logger.info(f"✅ Commande fallback #{order.id} créée")
+ #       return order
+        
+ #   except Exception as e:
+ #       logger.error(f"❌ Échec création simple: {e}")
+ #       return None

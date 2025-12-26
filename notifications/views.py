@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Notification
 from .serializers import NotificationSerializer
-
+from rest_framework.permissions import AllowAny
 class NotificationView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -34,3 +34,4 @@ class NotificationDetailView(APIView):
             return Response({'message': 'Notification supprimée'}, status=status.HTTP_204_NO_CONTENT)
         except Notification.DoesNotExist:
             return Response({'error': 'Notification non trouvée'}, status=status.HTTP_404_NOT_FOUND)
+

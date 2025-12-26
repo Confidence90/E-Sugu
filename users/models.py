@@ -4,6 +4,7 @@ from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, Permis
 from django.contrib.auth.hashers import make_password
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import RegexValidator
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from .managers import UserManager
 
@@ -250,6 +251,14 @@ class VendorProfile(models.Model):
         # Vérifier si le profil est complété
         required_fields = ['shop_name', 'contact_name', 'contact_email', 'contact_phone']
         self.is_completed = all(getattr(self, field) for field in required_fields)
+        if self.pk:  # Si l'instance existe déjà
+            try:
+                old_instance = VendorProfile.objects.get(pk=self.pk)
+                if old_instance.status != 'approved' and self.status == 'approved':
+                    self.verified_at = timezone.now()
+                    self.verification_status = 'verified'
+            except VendorProfile.DoesNotExist:
+                pass  # Nouvelle instance
         super().save(*args, **kwargs)
 
     class Meta:

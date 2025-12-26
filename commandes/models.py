@@ -7,6 +7,7 @@ from django.utils import timezone
 class Order(models.Model):
     STATUS_CHOICES = [
         ('pending', 'En attente'),
+        ('confirmed', 'Confirmé'),
         ('ready_to_ship', 'Prêt à expédier'),
         ('shipped', 'Expédié'),
         ('delivered', 'Livré'),
@@ -17,7 +18,7 @@ class Order(models.Model):
     buyer= models.ForeignKey(User, on_delete=models.CASCADE, related_name='purchases', verbose_name='Acheteur')
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='orders', verbose_name='Annonce')
     quantity = models.PositiveIntegerField('Quantité commandée',default=1)
-    order_number = models.CharField(max_length=20, unique=True, blank=True)  # Numéro unique
+    order_number = models.CharField(max_length=50, unique=True, blank=True)  # Numéro unique
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders')
     status = models.CharField('Statut',max_length=20, choices=STATUS_CHOICES, default='pending')
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
