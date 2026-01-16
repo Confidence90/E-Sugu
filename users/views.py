@@ -3,10 +3,10 @@ from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework import viewsets
 from django.db.models import F
 from google.auth.transport.requests import Request as GoogleAuthRequest
-
+from google.oauth2 import id_token
 
 from google.auth.transport import requests
-from google.oauth2 import id_token
+from google.oauth2 import id_token as google_id_token
 from django.utils import timezone
 from rest_framework.permissions import IsAdminUser
 from datetime import timedelta, datetime
@@ -337,213 +337,145 @@ class TestAuthenticationView(GenericAPIView):
 # users/views.py - MODIFIEZ GoogleLoginView pour ajouter plus de logs
 class GoogleLoginView(APIView):
     permission_classes = [AllowAny]
-    
-    def post(self, request, *args, **kwargs):
-        logger.debug("🔍 Requête Google reçue: %s", request.data)
+
+    def post(self, request):
+        # Accepter les deux types de tokens
+        access_token = request.data.get("access_token")
+        id_token_str = request.data.get("id_token")  # 🔥 AJOUTER CETTE LIGNE
         
-        # 🔥 CORRECTION: Accepter multiple formats
-        id_token_str = (
-            request.data.get('id_token') or 
-            request.data.get('credential') or
-            request.data.get('token')
-        )
-        
-        if not id_token_str:
-            logger.error("❌ Token manquant dans: %s", request.data)
+        logger.debug(f"🔍 Requête Google reçue: access_token={access_token is not None}, id_token={id_token_str is not None}")
+
+        # 🔥 CORRECTION: Accepter soit access_token soit id_token
+        if not access_token and not id_token_str:
             return Response(
-                {'error': 'Token Google requis. Envoyez id_token ou credential.'}, 
+                {"error": "access_token ou id_token requis"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        logger.info("📝 Token reçu (longueur: %d): %s...", len(id_token_str), id_token_str[:50])
-        
-        try:
-            GOOGLE_CLIENT_ID = settings.GOOGLE_CLIENT_ID
-            
-            logger.info("🔑 Client ID configuré: %s", GOOGLE_CLIENT_ID)
-            
-            if not GOOGLE_CLIENT_ID:
-                logger.error("❌ GOOGLE_CLIENT_ID non configuré")
-                return Response(
-                    {'error': 'Configuration serveur manquante'}, 
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
-            # 🔥 ÉTAPE 1: Décoder sans vérification pour voir le contenu
-            from google.auth import jwt
-            
+
+        # 🔥 STRATÉGIE: Traiter id_token en priorité (mobile)
+        if id_token_str:
+            logger.info("📱 Traitement comme id_token (mobile)")
             try:
-                # Essayer de décoder sans vérification d'abord pour le débogage
-                decoded = jwt.decode(id_token_str, verify=False)
-                logger.info("✅ Token décodé (sans vérif):")
-                logger.info("   - Email: %s", decoded.get('email'))
-                logger.info("   - Aud: %s", decoded.get('aud'))
-                logger.info("   - Iss: %s", decoded.get('iss'))
-                logger.info("   - Exp: %s", decoded.get('exp'))
-                logger.info("   - AZP: %s", decoded.get('azp'))
-            except Exception as e:
-                logger.error("❌ Impossible de décoder le token: %s", str(e))
-            
-            # 🔥 ÉTAPE 2: Vérifier avec Google
-            logger.info("🔄 Validation du token avec Google...")
-            
-            try:
+                # Vérifier le id_token avec Google
                 id_info = id_token.verify_oauth2_token(
                     id_token_str, 
                     GoogleAuthRequest(),
-                    GOOGLE_CLIENT_ID,
-                    clock_skew_in_seconds=60  # Plus de tolérance
+                    settings.GOOGLE_CLIENT_ID,
+                    clock_skew_in_seconds=60
                 )
-                logger.info("✅ Token validé avec succès pour email: %s", id_info.get('email'))
-            except ValueError as e:
-                logger.error("❌ Erreur validation token Google: %s", str(e))
-                # Essayer avec l'audience alternative (azp)
-                try:
-                    azp = decoded.get('azp') if 'decoded' in locals() else None
-                    if azp and azp != GOOGLE_CLIENT_ID:
-                        logger.info("🔄 Tentative avec azp (authorized party): %s", azp)
-                        id_info = id_token.verify_oauth2_token(
-                            id_token_str, 
-                            GoogleAuthRequest(),
-                            azp,  # Essayer avec azp
-                            clock_skew_in_seconds=60
-                        )
-                        logger.info("✅ Token validé avec azp: %s", azp)
-                    else:
-                        raise e
-                except Exception as e2:
-                    logger.error("❌ Échec validation même avec azp: %s", str(e2))
-                    return Response(
-                        {'error': f'Token Google invalide: {str(e)}'}, 
-                        status=status.HTTP_401_UNAUTHORIZED
-                    )
-            
-            # 🔥 CORRECTION: Vérifier l'audience multiple
-            allowed_audiences = [GOOGLE_CLIENT_ID]
-            
-            # Ajouter l'azp comme audience possible
-            if 'azp' in id_info and id_info['azp'] not in allowed_audiences:
-                allowed_audiences.append(id_info['azp'])
-                logger.info("➕ Ajout de azp aux audiences autorisées: %s", id_info['azp'])
-            
-            if id_info['aud'] not in allowed_audiences:
-                logger.error("❌ Audience mismatch:")
-                logger.error("   - Attendu: %s", allowed_audiences)
-                logger.error("   - Reçu: %s", id_info['aud'])
-                logger.error("   - AZP: %s", id_info.get('azp'))
                 
+                email = id_info.get('email')
+                if not email:
+                    return Response(
+                        {"error": "Email non fourni par Google"}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                first_name = id_info.get('given_name', '')
+                last_name = id_info.get('family_name', '')
+                
+                # Logique de création/récupération utilisateur...
+                user, created = User.objects.get_or_create(
+                    email=email,
+                    defaults={
+                        "username": email.split("@")[0],
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "is_active": True,
+                        "is_verified": True,
+                        "auth_provider": "google",
+                    }
+                )
+                
+                # Générer les tokens JWT
+                refresh = RefreshToken.for_user(user)
+                
+                return Response({
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                    "user_id": user.id,
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "is_new_user": created,
+                    "message": "Connexion Google (mobile) réussie"
+                })
+                
+            except ValueError as e:
+                logger.error(f"❌ id_token invalide: {str(e)}")
                 return Response(
-                    {
-                        'error': 'Discordance de Client ID',
-                        'expected': allowed_audiences,
-                        'received': id_info['aud'],
-                        'azp': id_info.get('azp'),
-                        'tip': 'Vérifiez les audiences autorisées'
-                    }, 
+                    {"error": f"Token Google invalide: {str(e)}"},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
+        
+        # 🔥 SINON, traiter access_token (web)
+        elif access_token:
+            logger.info("🌐 Traitement comme access_token (web)")
             
-            # Vérifier l'émetteur
-            allowed_issuers = [
-                'accounts.google.com', 
-                'https://accounts.google.com',
-                'http://accounts.google.com'
-            ]
-            
-            if id_info['iss'] not in allowed_issuers:
-                logger.error("❌ Issuer invalide: %s", id_info['iss'])
+            # Vérification OFFICIELLE Google
+            google_response = requests.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10
+            )
+
+            if google_response.status_code != 200:
+                logger.error("❌ Access token Google invalide: %s", google_response.text)
                 return Response(
-                    {'error': f'Émetteur non autorisé: {id_info["iss"]}'}, 
+                    {"error": "Token Google invalide"},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
+
+            userinfo = google_response.json()
             
-            # Vérifier l'expiration
-            import time
-            current_time = int(time.time())
-            if id_info['exp'] < current_time:
-                logger.error("❌ Token expiré: exp=%s, current=%s", id_info['exp'], current_time)
-                return Response(
-                    {'error': 'Token expiré'}, 
-                    status=status.HTTP_401_UNAUTHORIZED
-                )
-            
-            # Récupérer l'email
-            email = id_info.get('email')
+            email = userinfo.get("email")
             if not email:
-                logger.error("❌ Pas d'email dans le token")
                 return Response(
-                    {'error': 'Email non fourni par Google'}, 
+                    {"error": "Email non fourni par Google"}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            logger.info("👤 Recherche/création utilisateur pour: %s", email)
+            first_name = userinfo.get("given_name", "")
+            last_name = userinfo.get("family_name", "")
             
-            # 🔥 CORRECTION: Logique améliorée pour récupérer/créer l'utilisateur
-            try:
-                user = User.objects.get(email=email)
-                created = False
-                logger.info("✅ Utilisateur existant trouvé: %s", email)
-                
-                # Mettre à jour les informations
-                if not user.first_name and 'given_name' in id_info:
-                    user.first_name = id_info['given_name']
-                if not user.last_name and 'family_name' in id_info:
-                    user.last_name = id_info['family_name']
-                user.auth_provider = 'google'
-                user.is_verified = True
-                user.is_active = True
-                user.save()
-                
-            except User.DoesNotExist:
-                # Créer un nouvel utilisateur
-                username = email.split('@')[0]
-                
-                # S'assurer que le username est unique
-                base_username = username
-                counter = 1
-                while User.objects.filter(username=username).exists():
-                    username = f"{base_username}_{counter}"
-                    counter += 1
-                
-                user = User.objects.create(
-                    email=email,
-                    username=username,
-                    first_name=id_info.get('given_name', ''),
-                    last_name=id_info.get('family_name', ''),
-                    is_verified=True,
-                    is_active=True,
-                    auth_provider='google'
-                )
-                created = True
-                logger.info("✅ Nouvel utilisateur créé: %s", email)
-            
-            # 🔥 CORRECTION: Générer les tokens
-            refresh = RefreshToken.for_user(user)
-            access_token = str(refresh.access_token)
-            refresh_token = str(refresh)
-            
-            logger.info("🎉 Connexion réussie pour: %s (new: %s)", email, created)
-            
-            return Response({
-                'refresh': refresh_token,
-                'access': access_token,
-                'email': user.email,
-                'full_name': user.get_full_name or f"{user.first_name} {user.last_name}".strip(),
-                'user_id': user.id,  # 🔥 AJOUTER user_id
-                'id': user.id,       # 🔥 AJOUTER id aussi (pour compatibilité)
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'is_new_user': created,
-                'message': 'Connexion Google réussie'
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error("💥 Erreur inattendue: %s", str(e), exc_info=True)
-            return Response(
-                {'error': f'Erreur serveur: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            # 🔥 Création / récupération utilisateur
+            user, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    "username": email.split("@")[0],
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "is_active": True,
+                    "is_verified": True,
+                    "auth_provider": "google",
+                }
             )
 
+            if not created:
+                user.is_active = True
+                user.is_verified = True
+                user.auth_provider = "google"
+                user.save()
+
+            # 🔥 JWT local
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+                "user_id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "is_new_user": created,
+                "message": "Connexion Google réussie"
+            })
+        
+        else:
+            return Response(
+                {"error": "Token Google requis"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def google_config_debug(request):
@@ -614,112 +546,182 @@ class CustomGoogleCallbackView(OAuth2CallbackView):
 
 
 
+# users/views.py - AJOUTEZ cette vue
 class FacebookLoginView(APIView):
     permission_classes = [AllowAny]
-    
+
     def post(self, request, *args, **kwargs):
-        logger.debug("Requête Facebook reçue: %s", request.data)
-        access_token = request.data.get('access_token')
+        logger.debug("🔍 Requête Facebook reçue: %s", request.data)
+
+        # 1️⃣ Récupération du token Facebook
+        access_token = request.data.get("access_token")
         
         if not access_token:
-            logger.error("access_token manquant")
-            return Response({'error': 'access_token requis'}, status=status.HTTP_400_BAD_REQUEST)
+            logger.error("❌ Token Facebook manquant")
+            return Response(
+                {"error": "Token Facebook requis (access_token)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
+        # 2️⃣ Vérification configuration
+        facebook_app_id = settings.SOCIAL_AUTH_FACEBOOK_KEY
+        facebook_app_secret = settings.SOCIAL_AUTH_FACEBOOK_SECRET
+        
+        if not facebook_app_id or not facebook_app_secret:
+            logger.critical("❌ Configuration Facebook manquante")
+            return Response(
+                {"error": "Configuration Facebook manquante"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # 3️⃣ Validation du token auprès de Facebook
         try:
-            # 1. Valider le token avec Facebook
+            # Appel à l'API Facebook pour vérifier le token
             debug_token_url = "https://graph.facebook.com/debug_token"
             params = {
                 'input_token': access_token,
-                'access_token': f"{settings.SOCIAL_AUTH_FACEBOOK_KEY}|{settings.SOCIAL_AUTH_FACEBOOK_SECRET}"
+                'access_token': f"{facebook_app_id}|{facebook_app_secret}"
             }
             
             response = requests.get(debug_token_url, params=params)
-            data = response.json()
+            debug_data = response.json()
             
-            if 'error' in data or not data.get('data', {}).get('is_valid'):
-                logger.error("Token Facebook invalide: %s", data)
-                return Response({'error': 'Token Facebook invalide'}, status=status.HTTP_400_BAD_REQUEST)
+            if 'error' in debug_data or not debug_data.get('data', {}).get('is_valid'):
+                logger.error("❌ Token Facebook invalide: %s", debug_data)
+                return Response(
+                    {"error": "Token Facebook invalide ou expiré"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
             
-            # 2. Récupérer les infos utilisateur
-            user_info_url = "https://graph.facebook.com/me"
+            # 4️⃣ Récupération des informations utilisateur
+            user_info_url = "https://graph.facebook.com/v12.0/me"
             params = {
                 'access_token': access_token,
-                'fields': 'id,name,email,first_name,last_name,picture.type(large)'
+                'fields': 'id,name,email,first_name,last_name,picture'
             }
             
             user_response = requests.get(user_info_url, params=params)
             user_data = user_response.json()
             
             if 'error' in user_data:
-                logger.error("Erreur récupération infos: %s", user_data)
-                return Response({'error': 'Impossible de récupérer les infos utilisateur'}, status=status.HTTP_400_BAD_REQUEST)
+                logger.error("❌ Erreur récupération infos utilisateur: %s", user_data)
+                return Response(
+                    {"error": "Impossible de récupérer les informations utilisateur"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             
-            # 3. Gérer l'utilisateur
-            email = user_data.get('email')
+            # 5️⃣ Extraction des informations
+            facebook_id = user_data.get("id")
+            email = user_data.get("email")
+            
+            # Facebook peut ne pas retourner l'email
             if not email:
-                # Facebook peut ne pas retourner l'email, créer un email temporaire
-                email = f"facebook_{user_data['id']}@facebook.com"
+                email = f"facebook_{facebook_id}@facebook.com"
             
-            # Vérifier si un SocialAccount existe déjà
+            first_name = user_data.get("first_name", "")
+            last_name = user_data.get("last_name", "")
+            
+            logger.info("👤 Authentification Facebook réussie pour: %s", email)
+            
+            # 6️⃣ Récupération ou création de l'utilisateur
             try:
-                social_account = SocialAccount.objects.get(uid=user_data['id'])
-                user = social_account.user
-                created = False
-            except SocialAccount.DoesNotExist:
-                # Vérifier si un utilisateur normal existe avec cet email
+                # Chercher d'abord par SocialAccount
                 try:
+                    social_account = SocialAccount.objects.get(
+                        provider='facebook', 
+                        uid=facebook_id
+                    )
+                    user = social_account.user
+                    created = False
+                    logger.info("✅ Utilisateur Facebook existant")
+                except SocialAccount.DoesNotExist:
+                    # Chercher par email
                     user = User.objects.get(email=email)
-                    # L'utilisateur existe mais pas de compte social, créer le lien
+                    
+                    # Créer le SocialAccount pour lier Facebook
                     SocialAccount.objects.create(
                         user=user,
                         provider='facebook',
-                        uid=user_data['id'],
+                        uid=facebook_id,
                         extra_data=user_data
                     )
                     created = False
-                except User.DoesNotExist:
-                    # Créer un nouvel utilisateur
-                    username = email.split('@')[0]
-                    user = User.objects.create(
-                        email=email,
-                        username=username,
-                        first_name=user_data.get('first_name', ''),
-                        last_name=user_data.get('last_name', ''),
-                        is_verified=True,
-                        auth_provider='facebook'
-                    )
+                    logger.info("✅ Utilisateur existant, compte Facebook lié")
                     
-                    # Créer le SocialAccount
-                    SocialAccount.objects.create(
-                        user=user,
-                        provider='facebook',
-                        uid=user_data['id'],
-                        extra_data=user_data
-                    )
-                    created = True
-            
-            # Mettre à jour les informations
-            user.auth_provider = 'facebook'
-            user.is_verified = True
-            user.save()
-            
-            # Générer les tokens JWT
-            refresh = RefreshToken.for_user(user)
-            
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'email': user.email,
-                'full_name': f"{user.first_name} {user.last_name}".strip(),
-                'user_id': user.id,
-                'is_new_user': created,
-                'message': 'Connexion Facebook réussie'
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error("Erreur complète Facebook: %s", str(e), exc_info=True)
-            return Response({'error': f'Erreur de connexion Facebook: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+            except User.DoesNotExist:
+                # Créer un nouvel utilisateur
+                base_username = email.split("@")[0]
+                username = base_username
+                counter = 1
 
+                while User.objects.filter(username=username).exists():
+                    username = f"{base_username}_{counter}"
+                    counter += 1
+
+                user = User.objects.create(
+                    email=email,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    phone_full=None,  
+                    is_verified=True,
+                    is_active=True,
+                    auth_provider="facebook",
+                )
+                
+                # Créer le SocialAccount
+                SocialAccount.objects.create(
+                    user=user,
+                    provider='facebook',
+                    uid=facebook_id,
+                    extra_data=user_data
+                )
+                created = True
+                logger.info("🆕 Nouvel utilisateur Facebook créé")
+
+            # 7️⃣ Mise à jour des informations
+            user.auth_provider = "facebook"
+            user.is_verified = True
+            user.is_active = True
+            
+            if not user.first_name:
+                user.first_name = first_name
+            if not user.last_name:
+                user.last_name = last_name
+                
+            user.save()
+
+            # 8️⃣ Génération des tokens JWT
+            refresh = RefreshToken.for_user(user)
+
+            return Response(
+                {
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                    "user_id": user.id,
+                    "id": user.id,  # compatibilité frontend
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "full_name": user.get_full_name,
+                    "is_new_user": created,
+                    "message": "Connexion Facebook réussie",
+                },
+                status=status.HTTP_200_OK,
+            )
+            
+        except requests.RequestException as e:
+            logger.error("❌ Erreur réseau avec Facebook: %s", str(e))
+            return Response(
+                {"error": "Erreur de connexion avec Facebook"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception as e:
+            logger.error("❌ Erreur inattendue Facebook: %s", str(e), exc_info=True)
+            return Response(
+                {"error": f"Erreur lors de l'authentification Facebook: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 class AppleLoginView(APIView):
     def post(self, request, *args, **kwargs):
@@ -3420,3 +3422,203 @@ def out_of_stock_alerts(request):
         'total_out_of_stock': len(products_data)
     })
 
+
+# users/views.py - AJOUTEZ CES VUES À LA FIN
+
+class ChangePasswordView(APIView):
+    """Changer le mot de passe de l'utilisateur connecté"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        current_password = request.data.get('current_password')
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+        
+        # Validation des données
+        if not all([current_password, new_password, confirm_password]):
+            return Response(
+                {'error': 'Tous les champs sont requis.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Vérification du mot de passe actuel
+        if not user.check_password(current_password):
+            return Response(
+                {'error': 'Le mot de passe actuel est incorrect.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Vérification que les nouveaux mots de passe correspondent
+        if new_password != confirm_password:
+            return Response(
+                {'error': 'Les nouveaux mots de passe ne correspondent pas.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validation de la complexité du mot de passe
+        if len(new_password) < 8:
+            return Response(
+                {'error': 'Le mot de passe doit contenir au moins 8 caractères.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Changement du mot de passe
+        user.set_password(new_password)
+        user.save()
+        
+        # Déconnexion de tous les autres appareils (optionnel)
+        from rest_framework_simplejwt.tokens import OutstandingToken, BlacklistedToken
+        from rest_framework_simplejwt.exceptions import TokenError
+        
+        # Révoquer tous les tokens existants
+        tokens = OutstandingToken.objects.filter(user=user)
+        for token in tokens:
+            try:
+                BlacklistedToken.objects.get_or_create(token=token)
+            except:
+                pass
+        
+        return Response({
+            'message': 'Mot de passe changé avec succès. Veuillez vous reconnecter.',
+            'success': True
+        })
+
+
+class DeleteAccountView(APIView):
+    """Supprimer définitivement le compte utilisateur"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        password = request.data.get('password')
+        
+        # Vérification du mot de passe
+        if not password:
+            return Response(
+                {'error': 'Mot de passe requis pour confirmer la suppression.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not user.check_password(password):
+            return Response(
+                {'error': 'Mot de passe incorrect.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Vérification supplémentaire
+        confirmation = request.data.get('confirmation')
+        if confirmation != 'Je confirme la suppression définitive de mon compte':
+            return Response({
+                'error': 'Veuillez taper exactement: "Je confirme la suppression définitive de mon compte" pour confirmer.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Sauvegarder certaines informations pour les archives (optionnel)
+        deletion_info = {
+            'user_id': user.id,
+            'email': user.email,
+            'username': user.username,
+            'deleted_at': timezone.now().isoformat(),
+            'reason': request.data.get('reason', 'Non spécifié')
+        }
+        
+        # Vous pouvez sauvegarder ces informations dans un log ou une table dédiée
+        logger.warning(f"Compte supprimé: {deletion_info}")
+        
+        # Désactiver d'abord le compte
+        user.is_active = False
+        user.email = f"deleted_{user.id}_{user.email}"  # Anonymiser l'email
+        user.username = f"deleted_{user.id}_{user.username}"
+        user.phone = None
+        user.phone_full = None
+        user.save()
+        
+        # Supprimer définitivement après un délai (optionnel)
+        # Pour l'instant, nous désactivons seulement
+        
+        return Response({
+            'message': 'Votre compte a été désactivé et sera supprimé définitivement sous 30 jours.',
+            'success': True,
+            'deletion_date': (timezone.now() + timedelta(days=30)).isoformat()
+        })
+
+
+class SoftDeleteAccountView(APIView):
+    """Désactiver le compte (suppression douce)"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        password = request.data.get('password')
+        
+        if not password:
+            return Response(
+                {'error': 'Mot de passe requis pour confirmer la désactivation.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not user.check_password(password):
+            return Response(
+                {'error': 'Mot de passe incorrect.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Désactiver le compte
+        user.is_active = False
+        user.save()
+        
+        # Déconnecter l'utilisateur
+        try:
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh_token = request.data.get('refresh_token')
+            if refresh_token:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+        except:
+            pass
+        
+        return Response({
+            'message': 'Votre compte a été désactivé. Vous pourrez le réactiver en vous connectant.',
+            'success': True
+        })
+
+
+class ReactivateAccountView(APIView):
+    """Réactiver un compte désactivé"""
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        email = request.data.get('email')
+        
+        if not email:
+            return Response(
+                {'error': 'Email requis.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            user = User.objects.get(email=email, is_active=False)
+            
+            # Vérifier si le compte peut être réactivé
+            if hasattr(user, 'deletion_scheduled_at'):
+                deletion_date = user.deletion_scheduled_at
+                if deletion_date and deletion_date < timezone.now():
+                    return Response({
+                        'error': 'Ce compte a été définitivement supprimé.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Envoyer un email de réactivation
+            otp_code = assign_otp_to_user(user)
+            send_otp_email(user, otp_code, purpose='reactivation')
+            
+            return Response({
+                'message': 'Un code de réactivation a été envoyé à votre email.',
+                'user_id': user.id,
+                'email_sent': True
+            })
+            
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Aucun compte désactivé trouvé avec cet email.'},
+                status=status.HTTP_404_NOT_FOUND
+            )

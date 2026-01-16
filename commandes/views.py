@@ -14,7 +14,14 @@ from rest_framework.decorators import api_view, permission_classes, action
 from datetime import datetime
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
-from django.http import HttpResponse  # Ajouter cet import
+from django.http import HttpResponse ,FileResponse# Ajouter cet import
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.units import inch
 from django.db import models
 from datetime import timedelta
 from users.models import User
@@ -801,17 +808,37 @@ def vendor_orders_debug(request):
 
 # commandes/views.py - AJOUTER OU MODIFIER
 
+# commandes/views.py - MODIFIER BuyerOrdersViewSet
+
 class BuyerOrdersViewSet(viewsets.ReadOnlyModelViewSet):
-    """Commandes de l'utilisateur (acheteur)"""
+    """Commandes où l'utilisateur est l'acheteur"""
     serializer_class = OrderSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        # Filtrer les commandes où l'utilisateur est l'acheteur
-        queryset = Order.objects.filter(user=self.request.user)
-        # ... (filtres existants)
-        return queryset
-
+        user = self.request.user
+        # Commandes où l'utilisateur est l'acheteur
+        queryset = Order.objects.filter(user=user)
+        
+        # Filtres optionnels
+        status = self.request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(status=status)
+        
+        # Recherche par numéro de commande
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(order_number__icontains=search)
+        
+        # Filtrage par date
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+        if date_from:
+            queryset = queryset.filter(created_at__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(created_at__lte=date_to)
+        
+        return queryset.order_by('-created_at')
 
 class SellerOrdersViewSet(viewsets.ReadOnlyModelViewSet):
     """Commandes des produits du vendeur"""
@@ -1779,3 +1806,208 @@ def admin_urgent_orders(request):
         'urgent_orders': orders_data,
         'last_checked': timezone.now().isoformat()
     })
+
+# AJOUTEZ CES VUES APRÈS TOUTES LES AUTRES
+
+class InvoiceView(APIView):
+    """Générer et télécharger une facture PDF"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, order_id):
+        try:
+            user = request.user
+            
+            # Récupérer la commande
+            order = Order.objects.get(id=order_id)
+            
+            # Vérifier que l'utilisateur a accès à cette commande
+            if order.user != user and not (user.is_staff or user.is_superuser):
+                return Response(
+                    {'error': 'Accès non autorisé à cette facture'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Créer un buffer pour le PDF
+            buffer = io.BytesIO()
+            
+            # Créer le document PDF
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=letter,
+                rightMargin=72,
+                leftMargin=72,
+                topMargin=72,
+                bottomMargin=72
+            )
+            
+            # Contenu du PDF
+            elements = []
+            styles = getSampleStyleSheet()
+            
+            # Style personnalisé
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=24,
+                spaceAfter=30,
+                textColor=colors.HexColor('#6d28d9')  # Violet
+            )
+            
+            # En-tête
+            elements.append(Paragraph("E-SUGU", title_style))
+            elements.append(Paragraph("Votre boutique en ligne préférée", styles['Normal']))
+            elements.append(Spacer(1, 20))
+            
+            # Titre de la facture
+            elements.append(Paragraph(f"FACTURE #{order.order_number}", styles['Heading2']))
+            elements.append(Spacer(1, 10))
+            
+            # Informations de la facture
+            invoice_info = f"""
+            <b>Date de facturation:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}<br/>
+            <b>Numéro de commande:</b> {order.order_number}<br/>
+            <b>Date de commande:</b> {order.created_at.strftime('%d/%m/%Y %H:%M')}<br/>
+            <b>Statut:</b> {order.get_status_display()}<br/>
+            """
+            elements.append(Paragraph(invoice_info, styles['Normal']))
+            elements.append(Spacer(1, 20))
+            
+            # Informations client
+            elements.append(Paragraph("<b>INFORMATIONS CLIENT</b>", styles['Heading3']))
+            client_info = f"""
+            <b>Nom:</b> {order.user.get_full_name() or order.user.username}<br/>
+            <b>Email:</b> {order.user.email}<br/>
+            <b>Téléphone:</b> {order.user.phone or 'Non renseigné'}<br/>
+            <b>Localisation:</b> {order.user.location or 'Non renseignée'}<br/>
+            """
+            elements.append(Paragraph(client_info, styles['Normal']))
+            elements.append(Spacer(1, 20))
+            
+            # Détails de livraison
+            if order.shipping_country or order.shipping_method:
+                elements.append(Paragraph("<b>INFORMATIONS DE LIVRAISON</b>", styles['Heading3']))
+                shipping_info = f"""
+                <b>Pays:</b> {order.shipping_country or 'Non spécifié'}<br/>
+                <b>Méthode:</b> {order.shipping_method or 'Non spécifiée'}<br/>
+                """
+                elements.append(Paragraph(shipping_info, styles['Normal']))
+                elements.append(Spacer(1, 20))
+            
+            # Tableau des articles
+            elements.append(Paragraph("<b>ARTICLES COMMANDÉS</b>", styles['Heading3']))
+            elements.append(Spacer(1, 10))
+            
+            # Préparer les données du tableau
+            data = [['Produit', 'Quantité', 'Prix unitaire', 'Sous-total']]
+            
+            for item in order.items.all():
+                product_name = item.listing.title if item.listing else "Produit non disponible"
+                data.append([
+                    product_name,
+                    str(item.quantity),
+                    f"{float(item.price):,.0f} FCFA",
+                    f"{float(item.subtotal()):,.0f} FCFA"
+                ])
+            
+            # Créer le tableau
+            table = Table(data, colWidths=[3*inch, 1*inch, 1.5*inch, 1.5*inch])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6d28d9')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+            ]))
+            
+            elements.append(table)
+            elements.append(Spacer(1, 20))
+            
+            # Total
+            total_text = f"<b>TOTAL:</b> {float(order.total_price):,.0f} FCFA"
+            elements.append(Paragraph(total_text, styles['Heading2']))
+            elements.append(Spacer(1, 30))
+            
+            # Notes
+            elements.append(Paragraph("<b>INFORMATIONS IMPORTANTES</b>", styles['Heading3']))
+            notes = """
+            • Cette facture est électronique et a la même valeur légale qu'une facture papier.<br/>
+            • Pour toute question concernant cette commande, contactez-nous à support@e-sugu.com.<br/>
+            • Le délai de livraison estimé est de 3 à 7 jours ouvrables.<br/>
+            • Merci pour votre confiance !<br/>
+            """
+            elements.append(Paragraph(notes, styles['Normal']))
+            elements.append(Spacer(1, 30))
+            
+            # Pied de page
+            footer = """
+            <b>E-SUGU</b><br/>
+            Email: support@e-sugu.com | Téléphone: +223 XX XX XX XX<br/>
+            © 2024 E-SUGU. Tous droits réservés.
+            """
+            elements.append(Paragraph(footer, styles['Normal']))
+            
+            # Générer le PDF
+            doc.build(elements)
+            
+            # Récupérer le PDF du buffer
+            pdf = buffer.getvalue()
+            buffer.close()
+            
+            # Créer la réponse
+            response = HttpResponse(pdf, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="facture_{order.order_number}.pdf"'
+            
+            return response
+            
+        except Order.DoesNotExist:
+            return Response(
+                {'error': 'Commande non trouvée'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"Erreur génération PDF: {str(e)}")
+            return Response(
+                {'error': f'Erreur lors de la génération de la facture: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class InvoiceURLView(APIView):
+    """Retourner une URL de téléchargement de facture (pour les APIs)"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, order_id):
+        try:
+            user = request.user
+            
+            # Récupérer la commande
+            order = Order.objects.get(id=order_id)
+            
+            # Vérifier les permissions
+            if order.user != user and not (user.is_staff or user.is_superuser):
+                return Response(
+                    {'error': 'Accès non autorisé'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Générer l'URL de téléchargement
+            invoice_url = request.build_absolute_uri(
+                f'/api/commandes/{order_id}/facture/'
+            )
+            
+            return Response({
+                'invoice_url': invoice_url,
+                'order_number': order.order_number,
+                'message': 'Facture générée avec succès',
+                'download_link': f'<a href="{invoice_url}" target="_blank">Télécharger la facture</a>'
+            })
+            
+        except Order.DoesNotExist:
+            return Response(
+                {'error': 'Commande non trouvée'},
+                status=status.HTTP_404_NOT_FOUND
+            )

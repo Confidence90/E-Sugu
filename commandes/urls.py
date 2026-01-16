@@ -4,14 +4,14 @@ from .views import *
 
 router = DefaultRouter()
 router.register(r'commandes', OrderViewSet, basename='commandes')
-router.register(r'my-orders', BuyerOrdersViewSet, basename='my-orders')
 router.register(r'seller-orders', SellerOrdersViewSet, basename='seller-orders')
+router.register(r'buyer-orders', BuyerOrdersViewSet, basename='buyer-order')
 
 urlpatterns = [
     path('', include(router.urls)),  # IMPORTANT : pas de /api ici !
 
     path('creer/', CreateOrderView.as_view(), name='creer-commande'),
-    path('mes/', OrderViewSet.as_view({'get': 'list'}), name='mes-commandes'),
+    path('mes/', OrderViewSet.as_view({'get': 'list'}), name='my-orders'),
 
     path('bulk-action/', BulkOrderActionView.as_view(), name='bulk-action'),
     path('export/', ExportOrdersView.as_view(), name='export-orders'),
@@ -40,4 +40,9 @@ urlpatterns = [
     path('recent/', admin_recent_orders, name='admin-recent-orders'),
     path('dashboard/recent/', admin_dashboard_recent_orders, name='dashboard-recent-orders'),
     path('urgent/', admin_urgent_orders, name='admin-urgent-orders'),
+
+     # AJOUTEZ CES NOUVELLES ROUTES POUR LES FACTURES
+    path('<int:order_id>/facture/', InvoiceView.as_view(), name='generate-invoice'),
+    path('<int:order_id>/telecharger-facture/', InvoiceView.as_view(), name='download-invoice'),  # Alias
+    path('<int:order_id>/invoice-url/', InvoiceURLView.as_view(), name='invoice-url'),
 ]

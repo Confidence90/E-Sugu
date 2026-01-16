@@ -96,7 +96,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True, null=True, blank=True, verbose_name=_("Email"))
     country_code = models.CharField(max_length=4, choices=COUNTRY_CHOICES, default='+225', verbose_name="Indicatif pays")
     phone = models.CharField(max_length=15, unique=True)
-    phone_full = models.CharField(max_length=25, unique=True)
+    phone_full = models.CharField(max_length=25, unique=True, null=True, blank=True)
     password = models.CharField(max_length=128)
     location = models.CharField(max_length=100, null=True, blank=True,choices=REGION_CHOICES,verbose_name="Région")
     stripe_account_id = models.CharField(max_length=255, null=True, blank=True)

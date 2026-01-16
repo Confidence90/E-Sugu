@@ -6,6 +6,9 @@ from pathlib import Path
 from decouple import config
 import os
 from datetime import timedelta
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # Build paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -292,7 +295,10 @@ DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL")
 GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
 GOOGLE_CLIENT_ID = config('GOOGLE_CLIENT_ID')
 SOCIAL_AUTH_PASSWORD = config('SOCIAL_AUTH_PASSWORD')
+# Variables Facebook (à mettre dans vos variables d'environnement)
 
+SOCIAL_AUTH_FACEBOOK_KEY = os.environ.get('SOCIAL_AUTH_FACEBOOK_KEY')
+SOCIAL_AUTH_FACEBOOK_SECRET = os.environ.get('SOCIAL_AUTH_FACEBOOK_SECRET')
 REST_USE_JWT = True
 REST_AUTH_TOKEN_MODEL = None
 # settings.py
@@ -352,8 +358,6 @@ SOCIALACCOUNT_PROVIDERS = {
     }
 }
 
-# Variables Facebook (à mettre dans vos variables d'environnement)
-SOCIAL_AUTH_FACEBOOK_KEY = os.getenv('FACEBOOK_APP_ID', 'your_facebook_app_id')
-SOCIAL_AUTH_FACEBOOK_SECRET = os.getenv('FACEBOOK_APP_SECRET', 'your_facebook_app_secret')
+
 print(f"GOOGLE_CLIENT_ID: {GOOGLE_CLIENT_ID}")
 print(f"GOOGLE_CLIENT_ID type: {type(GOOGLE_CLIENT_ID)}")

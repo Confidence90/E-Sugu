@@ -411,3 +411,39 @@ class AdminUserSerializer(serializers.ModelSerializer):
         if obj.last_login:
             return obj.last_login.strftime('%d/%m/%Y %H:%M')
         return 'Jamais connecté'
+    
+# users/serializers.py - AJOUTEZ CES SERIALIZERS
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(required=True, min_length=8, write_only=True)
+    confirm_password = serializers.CharField(required=True, min_length=8, write_only=True)
+    
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({
+                "confirm_password": "Les nouveaux mots de passe ne correspondent pas."
+            })
+        
+        # Vérification de la complexité du mot de passe
+        password = attrs['new_password']
+        if len(password) < 8:
+            raise serializers.ValidationError({
+                "new_password": "Le mot de passe doit contenir au moins 8 caractères."
+            })
+        
+        return attrs
+
+
+class DeleteAccountSerializer(serializers.Serializer):
+    password = serializers.CharField(required=True, write_only=True)
+    confirmation = serializers.CharField(required=True)
+    reason = serializers.CharField(required=False, allow_blank=True)
+    
+    def validate_confirmation(self, value):
+        expected = "Je confirme la suppression définitive de mon compte"
+        if value != expected:
+            raise serializers.ValidationError(
+                f'Veuillez taper exactement: "{expected}"'
+            )
+        return value
