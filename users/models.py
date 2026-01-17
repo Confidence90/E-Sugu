@@ -337,4 +337,19 @@ class Address(models.Model):
             lines.append(self.address_line2)
         lines.extend([self.city, self.region])
         return ', '.join(filter(None, lines))
-        
+    
+# models.py
+class PendingVendorRegistration(models.Model):
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=20)
+    location = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    
+    def is_valid(self):
+        return self.expires_at > timezone.now()
+    
+    class Meta:
+        ordering = ['-created_at']

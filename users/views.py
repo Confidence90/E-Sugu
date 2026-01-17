@@ -63,15 +63,38 @@ class RegisterView(APIView):
         data = request.data
         is_google_signup = data.get('is_google', False)
 
+        logger.info("🔍 Données d'inscription reçues: %s", data)
+        
+        # Normaliser l'email
+        if 'email' in data:
+            data['email'] = data['email'].lower().strip()
+            logger.info("📧 Email normalisé: %s", data['email'])
+
         serializer = UserSerializer(data=data)
-        logger.debug("Données reçus: %s", data)
+        
         if serializer.is_valid():
+            logger.info("✅ Validation serializer réussie")
             user = serializer.save()
 
-            # Marquage spécifique au vendeur
-            if user.is_seller:
-                user.is_seller_pending = True
-                user.save()
+            # 🔥 CORRECTION: Gestion correcte du statut vendeur
+            is_seller = data.get('is_seller', False)
+            
+            logger.info("👤 Statut vendeur demandé: %s", is_seller)
+            
+            if is_seller:
+                # Si l'utilisateur s'inscrit comme vendeur
+                user.is_seller = True
+                user.is_seller_pending = True  # En attente de vérification
+                user.role = 'seller'  # 🔥 IMPORTANT: Définir le rôle
+                logger.info("✅ Utilisateur inscrit comme vendeur: %s", user.email)
+            else:
+                user.role = 'buyer'  # 🔥 Définir le rôle par défaut
+                logger.info("✅ Utilisateur inscrit comme acheteur: %s", user.email)
+            
+            user.save()
+            
+            logger.info("💾 Utilisateur sauvegardé avec succès. ID: %s, Email: %s, Role: %s, is_seller: %s", 
+                       user.id, user.email, user.role, user.is_seller)
 
             if is_google_signup:
                 # Inscription Google : bypass OTP
@@ -90,7 +113,7 @@ class RegisterView(APIView):
                     otp_code = assign_otp_to_user(user)
                     send_otp_email(user, otp_code)
                 except Exception as e:
-                    logger.exception("Erreur lors de l’envoi OTP pour l’utilisateur %s", user.email)
+                    logger.exception("❌ Erreur lors de l'envoi OTP pour l'utilisateur %s", user.email)
                     user.delete()
                     return Response({
                         "error": f"Échec d'envoi du code OTP : {str(e)}"
@@ -98,13 +121,15 @@ class RegisterView(APIView):
 
                 return Response({
                     "user_id": user.id,
-                    "message": "Inscription réussie. Vérifiez votre boîte email pour l’OTP ✉️"
+                    "message": "Inscription réussie. Vérifiez votre boîte email pour l'OTP ✉️",
+                    "is_seller": user.is_seller,
+                    "is_seller_pending": user.is_seller_pending,
+                    "role": user.role,
+                    "email": user.email
                 }, status=status.HTTP_201_CREATED)
         else:
-            logger.error("Erreur de validation: %s", serializer.errors)
+            logger.error("❌ Erreur de validation serializer: %s", serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 # ✅ Vérifier le code OTP
 #@csrf_exempt
 class VerifyUserOTP(GenericAPIView):
@@ -3622,3 +3647,71 @@ class ReactivateAccountView(APIView):
                 {'error': 'Aucun compte désactivé trouvé avec cet email.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        
+# Dans views.py
+class CompleteVendorRegistrationView(APIView):
+    """Compléter l'inscription vendeur après vérification OTP"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        
+        # Vérifier que l'utilisateur est bien un vendeur en attente
+        if not user.is_seller or not user.is_seller_pending:
+            return Response(
+                {'error': 'Vous n\'êtes pas inscrit comme vendeur'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Récupérer les données stockées
+        shop_name = request.data.get('shop_name')
+        
+        if not shop_name:
+            return Response(
+                {'error': 'Le nom de la boutique est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Créer le profil vendeur
+        try:
+            vendor_profile = VendorProfile.objects.create(
+                user=user,
+                shop_name=shop_name,
+                contact_name=f"{user.first_name} {user.last_name}".strip(),
+                contact_email=user.email,
+                contact_phone=user.phone_full,
+                account_type=request.data.get('account_type', 'individual')
+            )
+            
+            # Mettre à jour le statut de l'utilisateur
+            user.is_seller_pending = False
+            user.save()
+            
+            return Response({
+                'message': 'Inscription vendeur complétée avec succès!',
+                'vendor_profile': VendorProfileSerializer(vendor_profile).data,
+                'is_completed': vendor_profile.is_completed
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Erreur lors de la création du profil vendeur: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def check_email_exists(request):
+    """Vérifier si un email existe déjà"""
+    email = request.data.get('email', '').lower().strip()
+    
+    if not email:
+        return Response({'error': 'Email requis'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    exists = User.objects.filter(email=email).exists()
+    
+    return Response({
+        'email': email,
+        'exists': exists,
+        'message': 'Email déjà utilisé' if exists else 'Email disponible'
+    })

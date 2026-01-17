@@ -35,11 +35,41 @@ class UserSerializer(serializers.ModelSerializer):
             'phone': {'required': True, 'allow_blank': False},
             'id': {'read_only': True},
             'role': {'read_only': False},  # PERMETTRE L'ÉCRITURE
-            'is_active': {'read_only': False},
-            'is_staff': {'read_only': False},
-            'is_superuser': {'read_only': False},
+            'is_seller': {'required': False, 'default': False},  # 🔥 Important
+            'is_active': {'read_only': True},
+            'is_staff': {'read_only': True},
+            'is_superuser': {'read_only': True},
         }
 
+    
+
+    def create(self, validated_data):
+        try:
+            validated_data.pop('password2')
+            password = validated_data.pop('password')
+            
+            # Définir les valeurs par défaut
+            validated_data.setdefault('is_verified', False)
+            validated_data.setdefault('is_seller_pending', False)
+            validated_data.setdefault('role', 'buyer')
+            
+            # Si is_seller est True, ajuster les valeurs
+            if validated_data.get('is_seller'):
+                validated_data['is_seller_pending'] = True
+                validated_data['role'] = 'seller'
+            else:
+                validated_data['role'] = 'buyer'
+            
+            validated_data['phone_full'] = f"{validated_data['country_code']}{validated_data['phone']}"
+            
+            user = User(**validated_data)
+            user.set_password(password)
+            user.save()
+            
+            return user
+        except Exception as e:
+            raise serializers.ValidationError(f"Erreur lors de la création de l'utilisateur : {str(e)}")
+    
     def validate_email(self, value):
         if value:
             if '@' not in value or not value:
@@ -70,27 +100,6 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"phone": "Ce numéro est déjà utilisé avec cet indicatif."})
             
         return attrs
-
-    def create(self, validated_data):
-        try:
-            # Suppression du champ password2
-            validated_data.pop('password2')
-            
-            # Extraction et hashage du mot de passe
-            password = validated_data.pop('password')
-            validated_data['is_verified'] = False
-            validated_data['is_seller_pending'] = False
-            # Création du phone_full avant la création de l'utilisateur
-            validated_data['phone_full'] = f"{validated_data['country_code']}{validated_data['phone']}"
-            
-            # Création de l'utilisateur
-            user = User(**validated_data)
-            user.set_password(password)
-            user.save()
-            
-            return user
-        except Exception as e:
-            raise serializers.ValidationError(f"Erreur lors de la création de l'utilisateur : {str(e)}")
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.CharField(max_length=255)

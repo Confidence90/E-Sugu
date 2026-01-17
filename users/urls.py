@@ -42,7 +42,7 @@ urlpatterns = [
     path('vendor/create-profile/', create_vendor_profile, name='vendor-create-profile'),
     path('vendor/debug-user-info/', debug_user_info, name='vendor-debug-user-info'),
     path('vendor/notifications/', vendor_notifications, name='vendor-notifications'),
-
+    path('check-email/', check_email_exists, name='check-email'),
     # 🔥 AJOUT DES URLs MANQUANTES :
     path('check-admin-permission/', check_admin_permission, name='check-admin-permission'),
     path('check-listing-permission/', check_listing_permission, name='check-listing-permission'),
