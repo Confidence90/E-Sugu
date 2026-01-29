@@ -94,8 +94,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     last_name = models.CharField(max_length=100, verbose_name=_("Nom"), default="", blank=True)
     username = models.CharField("Nom d'utilisateur", max_length=100, unique=False, null=True, blank=True)
     email = models.EmailField(unique=True, null=True, blank=True, verbose_name=_("Email"))
-    country_code = models.CharField(max_length=4, choices=COUNTRY_CHOICES, default='+225', verbose_name="Indicatif pays")
-    phone = models.CharField(max_length=15, unique=True)
+    country_code = models.CharField(max_length=4, choices=COUNTRY_CHOICES, default='+223', verbose_name="Indicatif pays")
+    phone = models.CharField(max_length=15, unique=True, null=True, blank=True, verbose_name="Téléphone")
     phone_full = models.CharField(max_length=25, unique=True, null=True, blank=True)
     password = models.CharField(max_length=128)
     location = models.CharField(max_length=100, null=True, blank=True,choices=REGION_CHOICES,verbose_name="Région")
@@ -145,6 +145,46 @@ class User(AbstractBaseUser, PermissionsMixin):
         return {
             'refresh': str(refresh),
             'access':str(refresh.access_token)}
+    
+    @classmethod
+    def get_platform_admin(cls):
+        """Récupérer un administrateur pour représenter la plateforme"""
+        # Chercher par ordre de préférence:
+        # 1. Superutilisateur avec email spécifique
+        # 2. Premier superutilisateur
+        # 3. Premier staff
+        # 4. Utilisateur avec rôle admin
+        # 5. Premier utilisateur
+        
+        admin = cls.objects.filter(
+            email='admin@e-sugu.com',
+            is_superuser=True
+        ).first()
+        
+        if not admin:
+            admin = cls.objects.filter(is_superuser=True).first()
+        
+        if not admin:
+            admin = cls.objects.filter(is_staff=True).first()
+        
+        if not admin:
+            admin = cls.objects.filter(role='admin').first()
+        
+        if not admin:
+            admin = cls.objects.first()
+        
+        return admin
+    
+    @property
+    def is_platform_admin(self):
+        """Vérifier si cet utilisateur peut représenter la plateforme"""
+        return any([
+            self.is_superuser,
+            self.is_staff,
+            self.role == 'admin',
+            self.email == 'admin@e-sugu.com',
+            self.email == 'platform@e-sugu.com'
+        ])
 
 
 class OneTimePassword(models.Model):
