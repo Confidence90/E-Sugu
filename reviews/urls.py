@@ -8,4 +8,5 @@ urlpatterns = [
     path('platform/', PlatformReviewsView.as_view(), name='platform-reviews'),
     path('<int:review_id>/reply/', ReplyToReviewView.as_view(), name='reply-to-review'),
     path('<int:review_id>/vote/', VoteOnReviewView.as_view(), name='vote-on-review'),
+    path('listing/<int:listing_id>/', ListingReviewView.as_view(), name='listing-review'),
 ]

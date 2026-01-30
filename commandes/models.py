@@ -1,3 +1,4 @@
+# commandes/models.py
 from django.db import models
 from users.models import User
 from listings.models import Listing
@@ -12,9 +13,11 @@ class Order(models.Model):
         ('shipped', 'Expédié'),
         ('delivered', 'Livré'),
         ('cancelled', 'Annulé'),
+        ('completed', 'Terminée'),
         ('failed', 'Échouée'),
         ('returned', 'Retourné'),
     ]
+    COMPLETED_STATUSES = ['completed', 'confirmed', 'delivered']
     buyer= models.ForeignKey(User, on_delete=models.CASCADE, related_name='purchases', verbose_name='Acheteur')
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='orders', verbose_name='Annonce')
     quantity = models.PositiveIntegerField('Quantité commandée',default=1)

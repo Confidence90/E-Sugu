@@ -499,3 +499,68 @@ def debug_platform_info(request):
         'logic_steps': logic,
         'review_count': Review.objects.filter(review_type='platform').count()
     })
+
+class ListingReviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, listing_id):
+        from listings.models import Listing
+        from commandes.models import Order
+
+        listing = get_object_or_404(Listing, id=listing_id)
+
+        # Interdire l’auto-évaluation
+        if listing.user == request.user:
+            return Response(
+                {'error': "Vous ne pouvez pas évaluer votre propre annonce."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Vérifier achat confirmé
+        has_bought = Order.objects.filter(
+            buyer=request.user,
+            listing=listing,
+            status__in=Order.COMPLETED_STATUSES
+        ).exists()
+
+        if not has_bought:
+            return Response(
+                {'error': "Vous devez avoir acheté ce produit pour l’évaluer."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Empêcher doublon
+        if Review.objects.filter(
+            reviewer=request.user,
+            reviewed=listing.user,  # ← Ajouter cette ligne pour vérifier l'annonce spécifique
+            review_type='product'
+        ).exists():
+            return Response(
+                {'error': "Vous avez déjà évalué cette annonce."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        rating = request.data.get('rating')
+        comment = request.data.get('comment')
+
+        if not rating or not isinstance(rating, int) or rating < 1 or rating > 5:
+            return Response({'error': 'Note invalide'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not comment or len(comment.strip()) < 5:
+            return Response({'error': 'Commentaire trop court'}, status=status.HTTP_400_BAD_REQUEST)
+
+        review = Review.objects.create(
+            reviewer=request.user,
+            reviewed=listing.user,
+            rating=rating,
+            comment=comment.strip(),
+            review_type='product',
+            is_verified_purchase=True
+        )
+
+        review.update_rating_stats()
+
+        return Response(
+            ReviewSerializer(review, context={'request': request}).data,
+            status=status.HTTP_201_CREATED
+        )
