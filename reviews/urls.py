@@ -17,5 +17,11 @@ urlpatterns = [
     path('seller/positive-reviews/', SellerPositiveReviewsView.as_view(), name='seller-positive-reviews'),
     path('seller/pending-reply/', SellerPendingReplyView.as_view(), name='seller-pending-reply'),
     path('seller/response-history/', SellerResponseHistoryView.as_view(), name='seller-response-history'),
-    path('seller/analytics/', SellerReviewAnalyticsView.as_view(), name='seller-analytics'),    
+    path('seller/analytics/', SellerReviewAnalyticsView.as_view(), name='seller-analytics'),   
+
+    path('admin/dashboard/', AdminReviewsDashboardView.as_view(), name='admin-reviews-dashboard'),
+    path('admin/all/', AdminAllReviewsView.as_view(), name='admin-all-reviews'),
+    path('admin/moderate/<int:review_id>/', AdminReviewModerationView.as_view(), name='admin-moderate-review'),
+    path('admin/platform-analytics/', AdminPlatformAnalyticsView.as_view(), name='admin-platform-analytics'),
+    path('admin/user/<int:user_id>/', AdminUserReviewsView.as_view(), name='admin-user-reviews'),
 ]
