@@ -283,7 +283,52 @@ class VendorProfile(models.Model):
     verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    verification_documents = models.JSONField(default=dict, blank=True, null=True)
+    id_front_image = models.ImageField(upload_to='kyc/id_front/', blank=True, null=True)
+    id_back_image = models.ImageField(upload_to='kyc/id_back/', blank=True, null=True)
+    proof_of_address = models.ImageField(upload_to='kyc/address/', blank=True, null=True)
+    business_registration = models.ImageField(upload_to='kyc/business/', blank=True, null=True)
+    
+    # Champs pour le suivi KYC
+    kyc_submitted_at = models.DateTimeField(null=True, blank=True)
+    kyc_reviewed_at = models.DateTimeField(null=True, blank=True)
+    kyc_reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_kyc'
+    )
+    kyc_rejection_reason = models.TextField(blank=True, null=True)
+    
+    # Score de confiance KYC
+    kyc_confidence_score = models.IntegerField(default=0)
 
+    def is_kyc_complete(self):
+        """Vérifier si le KYC est complètement rempli"""
+        required_fields = [
+            self.id_type, self.id_front_image, self.proof_of_address
+        ]
+        if self.account_type == 'company':
+            required_fields.append(self.business_registration)
+        return all(field for field in required_fields)
+    
+    def calculate_kyc_score(self):
+        """Calculer un score de confiance KYC"""
+        score = 0
+        
+        if self.id_front_image:
+            score += 30
+        if self.id_back_image:
+            score += 20
+        if self.proof_of_address:
+            score += 25
+        if self.business_registration and self.account_type == 'company':
+            score += 25
+        
+        self.kyc_confidence_score = score
+        return score
+    
     def __str__(self):
         return f"Profil vendeur - {self.user.email}"
 

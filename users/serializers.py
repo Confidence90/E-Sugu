@@ -456,3 +456,125 @@ class DeleteAccountSerializer(serializers.Serializer):
                 f'Veuillez taper exactement: "{expected}"'
             )
         return value
+    
+# Serializer pour inscription vendeur
+class VendorRegistrationSerializer(serializers.ModelSerializer):
+    password2 = serializers.CharField(max_length=128, min_length=8, write_only=True)
+    shop_name = serializers.CharField(write_only=True, required=True)
+    
+    class Meta:
+        model = User
+        fields = [
+            'id', 'first_name', 'last_name',  'email',
+            'country_code', 'phone', 'password', 'password2',
+            'location', 'shop_name'
+        ]
+        extra_kwargs = {
+            'password': {'write_only': True, 'required': True},
+            'first_name': {'required': True},
+            'last_name': {'required': True},
+            'email': {'required': True},
+            'phone': {'required': True},
+            'shop_name': {'required': True},
+        }
+
+    def create(self, validated_data):
+        # Extraire les données spécifiques au vendeur
+        shop_name = validated_data.pop('shop_name')
+        validated_data.pop('password2')
+        password = validated_data.pop('password')
+        
+        # Définir le rôle vendeur
+        validated_data['role'] = 'seller'
+        validated_data['is_seller'] = True
+        validated_data['is_seller_pending'] = True  # En attente de validation KYC
+        validated_data['phone_full'] = f"{validated_data['country_code']}{validated_data['phone']}"
+        
+        # Créer l'utilisateur vendeur
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
+        
+        # Créer un profil vendeur minimal
+        VendorProfile.objects.create(
+            user=user,
+            shop_name=shop_name,
+            contact_name=f"{user.first_name} {user.last_name}".strip(),
+            contact_email=user.email,
+            contact_phone=user.phone_full
+        )
+        
+        return user
+
+    def validate_email(self, value):
+        value = value.lower().strip()
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Cet email est déjà utilisé.")
+        return value
+
+    def validate(self, attrs):
+        password = attrs.get('password', '')
+        password2 = attrs.get('password2', '')
+        
+        if password != password2:
+            raise serializers.ValidationError("Les mots de passe ne correspondent pas.")
+        
+        return attrs
+
+
+# Serializer pour inscription utilisateur normal (acheteur)
+class BuyerRegistrationSerializer(serializers.ModelSerializer):
+    password2 = serializers.CharField(max_length=128, min_length=8, write_only=True)
+    
+    class Meta:
+        model = User
+        fields = [
+            'id', 'first_name', 'last_name', 'email',
+            'country_code', 'phone', 'password', 'password2', 'location'
+        ]
+        extra_kwargs = {
+            'password': {'write_only': True, 'required': True},
+            'first_name': {'required': True},
+            'last_name': {'required': True},
+            'email': {'required': True},
+            'phone': {'required': True},
+        }
+
+    def create(self, validated_data):
+        validated_data.pop('password2')
+        password = validated_data.pop('password')
+        
+        # Définir le rôle acheteur
+        validated_data['role'] = 'buyer'
+        validated_data['is_seller'] = False
+        validated_data['is_seller_pending'] = False
+        validated_data['phone_full'] = f"{validated_data['country_code']}{validated_data['phone']}"
+        
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
+        
+        return user
+    
+class VendorKYCSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VendorProfile
+        fields = [
+            'id_type', 'id_front_image', 'id_back_image',
+            'proof_of_address', 'business_registration',
+            'company_name', 'tax_id', 'vat_number'
+        ]
+    
+    def validate(self, attrs):
+        # Validation des documents KYC
+        if not attrs.get('id_front_image'):
+            raise serializers.ValidationError({
+                'id_front_image': 'Une photo recto de votre pièce d\'identité est requise.'
+            })
+        
+        if attrs.get('account_type') == 'company' and not attrs.get('business_registration'):
+            raise serializers.ValidationError({
+                'business_registration': 'Le document d\'enregistrement de l\'entreprise est requis.'
+            })
+        
+        return attrs

@@ -538,13 +538,13 @@ class ListingReviewView(APIView):
         # Empêcher doublon
         if Review.objects.filter(
             reviewer=request.user,
-            reviewed=listing.user,  # ← Ajouter cette ligne pour vérifier l'annonce spécifique
-            review_type='product'
+            listing=listing
         ).exists():
             return Response(
                 {'error': "Vous avez déjà évalué cette annonce."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
 
         rating = request.data.get('rating')
         comment = request.data.get('comment')
@@ -559,6 +559,7 @@ class ListingReviewView(APIView):
             reviewer=request.user,
             reviewed=listing.user,
             rating=rating,
+            listing=listing,
             comment=comment.strip(),
             review_type='product',
             is_verified_purchase=True

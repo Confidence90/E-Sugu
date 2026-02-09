@@ -17,6 +17,28 @@ logger = logging.getLogger(__name__)
 
 
 
+def generate_vendor_otp(length=6):
+    """Générer un OTP spécial pour les vendeurs"""
+    # Vous pouvez ajouter une logique différente ici
+    # Par exemple, inclure des lettres ou un format différent
+    import random
+    import string
+    
+    # Option 1: Mix de chiffres et lettres
+    characters = string.ascii_uppercase + string.digits
+    otp = ''.join(random.choice(characters) for _ in range(length))
+    
+    # Option 2: Ajouter un préfixe 'V' pour vendeur
+    # otp = 'V' + ''.join(str(random.randint(0, 9)) for _ in range(length-1))
+    
+    return otp
+
+
+def generate_buyer_otp(length=6):
+    """Générer un OTP standard pour les acheteurs"""
+    return ''.join(str(random.randint(0, 9)) for _ in range(length))
+
+
 
 # 🔐 Générer un OTP à 6 chiffres (aléatoire, pas TOTP)
 def generate_otp(length=6):
@@ -43,9 +65,15 @@ L’équipe {site_name}
     email.send(fail_silently=False)
 
 # 🧠 Assigner un OTP à un utilisateur (supprime l’ancien s’il existe)
-def assign_otp_to_user(user):
+def assign_otp_to_user(user, is_vendor=False):
+    """Assigner un OTP à un utilisateur avec type différent selon le rôle"""
     OneTimePassword.objects.filter(user=user).delete()
-    code = generate_otp()
+    
+    if is_vendor or user.role == 'seller':
+        code = generate_vendor_otp()
+    else:
+        code = generate_buyer_otp()
+    
     OneTimePassword.objects.create(user=user, code=code)
     return code
 

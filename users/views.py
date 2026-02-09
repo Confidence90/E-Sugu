@@ -39,9 +39,7 @@ from rest_framework import serializers
 from .utils import assign_otp_to_user, send_otp_email, verify_otp
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import User, OneTimePassword, VendorProfile, Address
-from .serializers import (UserSerializer,LoginSerializer, 
-UserProfileSerializer,SetNewPasswordSerializer,
-RequestResetPasswordAPISerializer,LogoutSerializer,VendorProfileSerializer, AddressSerializer)
+from .serializers import *
 from rest_framework.throttling import AnonRateThrottle
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth import get_user_model
@@ -130,37 +128,363 @@ class RegisterView(APIView):
         else:
             logger.error("❌ Erreur de validation serializer: %s", serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# Inscription acheteur (utilisateur normal)
+class BuyerRegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = BuyerRegistrationSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            user = serializer.save()
+            
+            # Envoyer OTP pour vérification
+            otp_code = assign_otp_to_user(user)
+            send_otp_email(user, otp_code)
+            
+            return Response({
+                "user_id": user.id,
+                "message": "Inscription réussie. Vérifiez votre email pour le code OTP.",
+                "role": user.role,
+                "email": user.email
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# Inscription vendeur
+class VendorRegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VendorRegistrationSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            user = serializer.save()
+            
+            # Envoyer OTP différent pour les vendeurs
+            otp_code = assign_otp_to_user(user, is_vendor=True)
+            send_otp_email(user, otp_code)
+            
+            # Créer une notification pour les admins
+            self.notify_admins_vendor_registration(user)
+            
+            return Response({
+                "user_id": user.id,
+                "message": "Inscription vendeur réussie. Vérifiez votre email pour le code OTP.",
+                "role": user.role,
+                "is_seller_pending": user.is_seller_pending,
+                "email": user.email,
+                "requires_kyc": True,
+                "next_steps": ["Vérification OTP", "Compléter le profil KYC"]
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def notify_admins_vendor_registration(self, vendor):
+        """Notifier les admins d'une nouvelle inscription vendeur"""
+        from django.core.mail import send_mail
+        from django.conf import settings
+        
+        admins = User.objects.filter(
+            Q(is_staff=True) | Q(is_superuser=True) | Q(role='admin')
+        )
+        
+        for admin in admins:
+            subject = "🛍️ Nouvelle inscription vendeur en attente"
+            message = f"""
+Un nouveau vendeur s'est inscrit sur la plateforme :
+
+📝 Informations :
+- Nom : {vendor.get_full_name}
+- Email : {vendor.email}
+- Téléphone : {vendor.phone_full}
+- Boutique : {vendor.vendor_profile.shop_name if hasattr(vendor, 'vendor_profile') else 'Non spécifié'}
+- Date : {timezone.now().strftime('%d/%m/%Y %H:%M')}
+
+🔗 Pour valider le KYC : http://localhost:8000/admin/users/user/{vendor.id}/change/
+"""
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [admin.email],
+                fail_silently=True
+            )
+
 # ✅ Vérifier le code OTP
 #@csrf_exempt
+#class VerifyUserOTP(GenericAPIView):
+  #  permission_classes = [AllowAny]
+
+  #  def post(self, request):
+ #       otpcode = request.data.get('otp')
+ #       email = request.data.get('email')
+ #       logger.debug("Vérification OTP pour email: %s, code: %s", email, otpcode)
+ #       if not otpcode:
+ #           return Response({'message': 'Code OTP requis'}, status=status.HTTP_400_BAD_REQUEST)
+ #       if not email:
+ #           return Response({'message': 'Email requis'}, status=status.HTTP_400_BAD_REQUEST)
+ #       try:
+ #           otp_obj = OneTimePassword.objects.get(code=otpcode, user__email=email)
+ #           user = otp_obj.user
+
+#            is_valid, message = verify_otp(user, otpcode)
+
+ #           if is_valid:
+ #               user.is_active = True
+ #               user.save()
+ #               otp_obj.delete()
+#                return Response({'message': 'Email vérifié avec succès.'}, status=status.HTTP_200_OK)
+#
+ #           return Response({'message': message}, status=status.HTTP_400_BAD_REQUEST)
+     
+ #       except OneTimePassword.DoesNotExist:
+ #           return Response({'message': 'Code invalide ou expiré.'}, status=status.HTTP_404_NOT_FOUND)
+        
+
 class VerifyUserOTP(GenericAPIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         otpcode = request.data.get('otp')
         email = request.data.get('email')
-        logger.debug("Vérification OTP pour email: %s, code: %s", email, otpcode)
-        if not otpcode:
-            return Response({'message': 'Code OTP requis'}, status=status.HTTP_400_BAD_REQUEST)
-        if not email:
-            return Response({'message': 'Email requis'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not otpcode or not email:
+            return Response(
+                {'message': 'Code OTP et email requis'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         try:
-            otp_obj = OneTimePassword.objects.get(code=otpcode, user__email=email)
-            user = otp_obj.user
-
+            user = User.objects.get(email=email.lower().strip())
             is_valid, message = verify_otp(user, otpcode)
 
             if is_valid:
                 user.is_active = True
+                user.is_verified = True
+                
+                # Si c'est un vendeur, envoyer une notification KYC
+                if user.role == 'seller' and user.is_seller_pending:
+                    # Envoyer un email de bienvenue spécial pour vendeurs
+                    self.send_vendor_welcome_email(user)
+                    
                 user.save()
-                otp_obj.delete()
-                return Response({'message': 'Email vérifié avec succès.'}, status=status.HTTP_200_OK)
+                
+                return Response({
+                    'message': 'Email vérifié avec succès.',
+                    'role': user.role,
+                    'requires_kyc': user.role == 'seller' and user.is_seller_pending
+                }, status=status.HTTP_200_OK)
 
             return Response({'message': message}, status=status.HTTP_400_BAD_REQUEST)
      
-        except OneTimePassword.DoesNotExist:
-            return Response({'message': 'Code invalide ou expiré.'}, status=status.HTTP_404_NOT_FOUND)
-        
+        except User.DoesNotExist:
+            return Response(
+                {'message': 'Utilisateur non trouvé.'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    def send_vendor_welcome_email(self, vendor):
+        """Envoyer un email de bienvenue spécial pour les vendeurs"""
+        subject = "🎉 Bienvenue sur E-Sugu - Votre compte vendeur est créé!"
+        message = f"""
+Bonjour {vendor.first_name},
 
+Félicitations! Votre compte vendeur a été créé avec succès.
+
+📋 Prochaines étapes :
+1. Complétez votre profil KYC dans votre espace vendeur
+2. Téléchargez vos documents d'identité
+3. Configurez vos méthodes de paiement
+4. Commencez à ajouter vos produits
+
+⏳ Votre compte sera activé après validation KYC par notre équipe.
+Vous recevrez une notification par email une fois validé.
+
+🔗 Accédez à votre espace vendeur : http://localhost:5173/vendor/dashboard
+
+Pour toute question, contactez-nous à support@e-sugu.com.
+
+L'équipe E-Sugu
+"""
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [vendor.email],
+            fail_silently=True
+        )
+
+# Vue pour la gestion KYC par l'admin
+class AdminVendorKYCView(APIView):
+    permission_classes = [IsAdminUser]
+    
+    def get(self, request):
+        """Liste des vendeurs en attente de validation KYC"""
+        pending_vendors = User.objects.filter(
+            role='seller',
+            is_seller_pending=True
+        ).select_related('vendor_profile')
+        
+        # Filtrer par statut KYC
+        kyc_status = request.GET.get('kyc_status', 'pending')
+        if kyc_status:
+            pending_vendors = pending_vendors.filter(
+                vendor_profile__verification_status=kyc_status
+            )
+        
+        serializer = AdminUserSerializer(pending_vendors, many=True)
+        
+        return Response({
+            'count': pending_vendors.count(),
+            'vendors': serializer.data
+        })
+    
+    def post(self, request, vendor_id):
+        """Valider ou rejeter le KYC d'un vendeur"""
+        try:
+            vendor = User.objects.get(id=vendor_id, role='seller')
+            
+            action = request.data.get('action')  # 'approve' ou 'reject'
+            reason = request.data.get('reason', '')
+            
+            if not hasattr(vendor, 'vendor_profile'):
+                return Response(
+                    {'error': 'Ce vendeur n\'a pas de profil KYC'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            vendor_profile = vendor.vendor_profile
+            
+            if action == 'approve':
+                # Approuver le KYC
+                vendor_profile.status = 'approved'
+                vendor_profile.verification_status = 'verified'
+                vendor_profile.verified_at = timezone.now()
+                vendor.is_seller_pending = False
+                
+                # Envoyer email de confirmation
+                self.send_kyc_approval_email(vendor)
+                
+            elif action == 'reject':
+                # Rejeter le KYC
+                vendor_profile.status = 'rejected'
+                vendor_profile.verification_status = 'rejected'
+                vendor.is_seller_pending = True
+                
+                # Envoyer email de rejet avec raison
+                self.send_kyc_rejection_email(vendor, reason)
+            else:
+                return Response(
+                    {'error': 'Action invalide. Utilisez "approve" ou "reject"'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            vendor_profile.save()
+            vendor.save()
+            
+            # Créer une notification pour le vendeur
+            self.create_vendor_notification(vendor, action, reason)
+            
+            return Response({
+                'message': f'KYC {action}é avec succès',
+                'vendor': {
+                    'id': vendor.id,
+                    'email': vendor.email,
+                    'status': vendor_profile.status,
+                    'is_seller_pending': vendor.is_seller_pending
+                }
+            })
+            
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Vendeur non trouvé'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    def send_kyc_approval_email(self, vendor):
+        """Envoyer un email d'approbation KYC"""
+        subject = "✅ Votre compte vendeur a été approuvé!"
+        message = f"""
+Bonjour {vendor.first_name},
+
+Nous avons le plaisir de vous informer que votre compte vendeur a été approuvé!
+
+🎉 **Votre boutique est maintenant active!**
+
+Vous pouvez dès maintenant :
+• Ajouter vos produits
+• Configurer vos méthodes de livraison
+• Commencer à recevoir des commandes
+• Accéder à toutes les fonctionnalités vendeur
+
+🔗 Connectez-vous à votre espace vendeur : 
+http://localhost:5173/vendor/dashboard
+
+Pour toute assistance, notre équipe support est disponible.
+
+Bienvenue dans la communauté E-Sugu!
+
+L'équipe E-Sugu
+"""
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [vendor.email],
+            fail_silently=True
+        )
+    
+    def send_kyc_rejection_email(self, vendor, reason):
+        """Envoyer un email de rejet KYC"""
+        subject = "❌ Votre compte vendeur nécessite des modifications"
+        message = f"""
+Bonjour {vendor.first_name},
+
+Votre demande de création de compte vendeur nécessite des modifications.
+
+📝 **Raison :** {reason}
+
+🔄 **Actions requises :**
+1. Connectez-vous à votre compte
+2. Allez dans "Mon profil vendeur"
+3. Corrigez les informations manquantes ou incorrectes
+4. Soumettez à nouveau pour validation
+
+🔗 Accéder à votre profil : 
+http://localhost:5173/vendor/profile
+
+Une fois les corrections effectuées, notre équipe réexaminera votre demande.
+
+Pour toute question, contactez-nous à support@e-sugu.com.
+
+L'équipe E-Sugu
+"""
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [vendor.email],
+            fail_silently=True
+        )
+    
+    def create_vendor_notification(self, vendor, action, reason):
+        """Créer une notification pour le vendeur"""
+        from notifications.models import Notification
+        
+        if action == 'approve':
+            content = "✅ Votre compte vendeur a été approuvé! Vous pouvez maintenant ajouter vos produits."
+        else:
+            content = f"❌ Votre compte vendeur nécessite des modifications. Raison: {reason}"
+        
+        Notification.objects.create(
+            user=vendor,
+            type='vendor_kyc',
+            content=content,
+            is_read=False
+        )
 
 # 🔐 Login
 #@csrf_exempt
@@ -2549,8 +2873,8 @@ def admin_top_vendors(request):
             # CORRECTION: Gestion sécurisée du nom
             if hasattr(vendor, 'vendor_profile') and vendor.vendor_profile:
                 vendor_name = vendor.vendor_profile.shop_name
-            elif vendor.get_full_name():
-                vendor_name = vendor.get_full_name()
+            elif vendor.get_full_name:
+                vendor_name = vendor.get_full_name
             else:
                 vendor_name = vendor.email.split('@')[0]
             
@@ -2608,8 +2932,8 @@ def admin_recent_orders(request):
         orders_data = []
         for order in recent_orders:
             customer_name = "Client sans nom"
-            if order.buyer.get_full_name():
-                customer_name = order.buyer.get_full_name()
+            if order.buyer.get_full_name:
+                customer_name = order.buyer.get_full_name
             elif order.buyer.first_name:
                 customer_name = order.buyer.first_name
             else:
@@ -2646,8 +2970,8 @@ def get_vendor_display_name(vendor):
     """Get the best display name for a vendor"""
     if hasattr(vendor, 'vendor_profile') and vendor.vendor_profile.shop_name:
         return vendor.vendor_profile.shop_name
-    elif vendor.get_full_name():
-        return vendor.get_full_name()
+    elif vendor.get_full_name:
+        return vendor.get_full_name
     else:
         return vendor.email.split('@')[0]  # Use username part of email
 
@@ -3714,4 +4038,130 @@ def check_email_exists(request):
         'email': email,
         'exists': exists,
         'message': 'Email déjà utilisé' if exists else 'Email disponible'
+    })
+class VendorKYCSumbitView(APIView):
+    """Soumission des documents KYC par le vendeur"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        
+        if user.role != 'seller' or not user.is_seller_pending:
+            return Response(
+                {'error': 'Accès réservé aux vendeurs en attente de validation'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        serializer = VendorKYCSerializer(
+            user.vendor_profile,
+            data=request.data,
+            partial=True,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            vendor_profile = serializer.save()
+            vendor_profile.kyc_submitted_at = timezone.now()
+            vendor_profile.calculate_kyc_score()
+            vendor_profile.save()
+            
+            # Notifier les admins
+            self.notify_admins_kyc_submission(user)
+            
+            return Response({
+                'message': 'Documents KYC soumis avec succès. En attente de validation.',
+                'kyc_score': vendor_profile.kyc_confidence_score,
+                'submitted_at': vendor_profile.kyc_submitted_at
+            })
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def notify_admins_kyc_submission(self, vendor):
+        """Notifier les admins d'une nouvelle soumission KYC"""
+        admins = User.objects.filter(
+            Q(is_staff=True) | Q(is_superuser=True) | Q(role='admin')
+        )
+        
+        for admin in admins:
+            subject = "📄 Nouvelle soumission KYC vendeur"
+            message = f"""
+Un vendeur a soumis ses documents KYC :
+
+👤 Vendeur : {vendor.get_full_name}
+📧 Email : {vendor.email}
+🏪 Boutique : {vendor.vendor_profile.shop_name}
+📊 Score KYC : {vendor.vendor_profile.kyc_confidence_score}/100
+📅 Soumis le : {vendor.vendor_profile.kyc_submitted_at.strftime('%d/%m/%Y %H:%M')}
+
+🔗 Vérifier le KYC : http://localhost:8000/admin/vendors/kyc/{vendor.id}/
+
+L'équipe E-Sugu
+"""
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [admin.email],
+                fail_silently=True
+            )
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_kyc_dashboard(request):
+    """Dashboard de gestion KYC pour les admins"""
+    # Statistiques KYC
+    total_vendors = User.objects.filter(role='seller').count()
+    pending_kyc = User.objects.filter(
+        role='seller',
+        vendor_profile__verification_status='pending',
+        vendor_profile__kyc_submitted_at__isnull=False
+    ).count()
+    
+    approved_kyc = User.objects.filter(
+        role='seller',
+        vendor_profile__verification_status='verified'
+    ).count()
+    
+    rejected_kyc = User.objects.filter(
+        role='seller',
+        vendor_profile__verification_status='rejected'
+    ).count()
+    
+    # Vendeurs récents avec KYC soumis
+    recent_kyc_submissions = User.objects.filter(
+        role='seller',
+        vendor_profile__kyc_submitted_at__isnull=False
+    ).order_by('-vendor_profile__kyc_submitted_at')[:5]
+    
+    recent_data = []
+    for vendor in recent_kyc_submissions:
+        recent_data.append({
+            'id': vendor.id,
+            'name': vendor.get_full_name,
+            'shop_name': vendor.vendor_profile.shop_name,
+            'submitted_at': vendor.vendor_profile.kyc_submitted_at,
+            'kyc_score': vendor.vendor_profile.kyc_confidence_score,
+            'status': vendor.vendor_profile.verification_status
+        })
+    
+    return Response({
+        'stats': {
+            'total_vendors': total_vendors,
+            'pending_kyc': pending_kyc,
+            'approved_kyc': approved_kyc,
+            'rejected_kyc': rejected_kyc,
+            'approval_rate': round((approved_kyc / total_vendors * 100), 1) if total_vendors > 0 else 0
+        },
+        'recent_submissions': recent_data,
+        'quick_actions': [
+            {
+                'label': 'Voir tous les KYC en attente',
+                'url': '/api/users/admin/vendors/kyc/?status=pending',
+                'count': pending_kyc
+            },
+            {
+                'label': 'Voir les KYC rejetés',
+                'url': '/api/users/admin/vendors/kyc/?status=rejected',
+                'count': rejected_kyc
+            }
+        ]
     })

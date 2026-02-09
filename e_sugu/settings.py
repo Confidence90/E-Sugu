@@ -77,6 +77,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'notifications.middleware.NotificationAuditMiddleware',
 ]
 
 AUTHENTICATION_BACKENDS=[
