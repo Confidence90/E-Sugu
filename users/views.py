@@ -4104,6 +4104,7 @@ L'équipe E-Sugu
                 [admin.email],
                 fail_silently=True
             )
+
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
 def admin_kyc_dashboard(request):
