@@ -70,10 +70,11 @@ def assign_otp_to_user(user, is_vendor=False):
     OneTimePassword.objects.filter(user=user).delete()
     
     if is_vendor or user.role == 'seller':
-        code = generate_vendor_otp()
+        code = generate_otp()
     else:
         code = generate_buyer_otp()
-    
+    if len(code) > 6:
+        raise ValueError("OTP trop long")
     OneTimePassword.objects.create(user=user, code=code)
     return code
 
@@ -84,11 +85,11 @@ def verify_otp(user, input_code):
     except OneTimePassword.DoesNotExist:
         return False, "Aucun code OTP trouvé"
 
-    delta = timezone.now() - otp_obj.created_at
-    if delta.total_seconds() > 300:
+    if (timezone.now() - otp_obj.created_at).total_seconds() > 300:
+        otp_obj.delete()
         return False, "Code expiré"
 
-    if otp_obj.code != input_code:
+    if otp_obj.code.strip() != str(input_code).strip():
         return False, "Code incorrect"
 
     otp_obj.delete()  # Supprime après succès

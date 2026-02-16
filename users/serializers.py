@@ -1,7 +1,7 @@
 # users/serializers.py
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
-from .models import User, VendorProfile, Address
+from .models import *
 import logging
 from django.utils.encoding import force_bytes
 from django.core.mail import send_mail
@@ -556,25 +556,144 @@ class BuyerRegistrationSerializer(serializers.ModelSerializer):
         
         return user
     
+# users/serializers.py
+
 class VendorKYCSerializer(serializers.ModelSerializer):
     class Meta:
         model = VendorProfile
         fields = [
-            'id_type', 'id_front_image', 'id_back_image',
-            'proof_of_address', 'business_registration',
-            'company_name', 'tax_id', 'vat_number'
+            'id_type',
+            'id_front_image',
+            "id_number",
+            'id_back_image',
+            'selfie_with_id',
+            'proof_of_address',
+            'business_registration',
+            'company_name',
+            'tax_id',
+            'vat_number',
+            'account_type',
         ]
-    
+        extra_kwargs = {
+            'business_registration': {'required': False, 'allow_null': True},
+        }
+
     def validate(self, attrs):
-        # Validation des documents KYC
         if not attrs.get('id_front_image'):
             raise serializers.ValidationError({
-                'id_front_image': 'Une photo recto de votre pièce d\'identité est requise.'
+                'id_front_image': "La photo recto de la pièce d'identité est obligatoire."
             })
-        
-        if attrs.get('account_type') == 'company' and not attrs.get('business_registration'):
-            raise serializers.ValidationError({
-                'business_registration': 'Le document d\'enregistrement de l\'entreprise est requis.'
-            })
-        
+
+        #if attrs.get('account_type') == 'company' and not attrs.get('business_registration'):
+        ####    raise serializers.ValidationError({
+        #        'business_registration': "Le document d’enregistrement de l’entreprise est requis."
+        #    })
+
         return attrs
+
+
+    
+# users/serializers.py
+class AdminVendorKYCSerializer(serializers.ModelSerializer):
+    """Serializer pour l'administration des KYC vendeurs"""
+    user_info = serializers.SerializerMethodField()
+    shop_info = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
+    submitted_at_formatted = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = VendorProfile
+        fields = [
+            'id',
+            'user_info',
+            'shop_info',
+            # Informations KYC
+            'id_type',
+            'documents',
+            'company_name',
+            'tax_id',
+            'vat_number',
+            # Statuts
+            'status',
+            'verification_status',
+            'kyc_confidence_score',
+            # Dates
+            'kyc_submitted_at',
+            'submitted_at_formatted',
+            'kyc_reviewed_at',
+            'kyc_reviewed_by',
+            'kyc_rejection_reason',
+            # Métadonnées
+            'created_at',
+            'updated_at'
+        ]
+    
+    def get_user_info(self, obj):
+        """Informations de l'utilisateur vendeur"""
+        return {
+            'id': obj.user.id,
+            'email': obj.user.email,
+            'full_name': obj.user.get_full_name,
+            'phone': obj.user.phone_full,
+            'is_active': obj.user.is_active,
+            'is_seller_pending': obj.user.is_seller_pending
+        }
+    
+    def get_shop_info(self, obj):
+        """Informations de la boutique"""
+        return {
+            'shop_name': obj.shop_name,
+            'contact_name': obj.contact_name,
+            'contact_email': obj.contact_email,
+            'contact_phone': obj.contact_phone,
+            'account_type': obj.account_type
+        }
+    
+    def get_documents(self, obj):
+        """URLs des documents KYC"""
+        request = self.context.get('request')
+        
+        documents = {}
+        if obj.id_front_image:
+            documents['id_front'] = request.build_absolute_uri(obj.id_front_image.url) if request else obj.id_front_image.url
+        if obj.id_back_image:
+            documents['id_back'] = request.build_absolute_uri(obj.id_back_image.url) if request else obj.id_back_image.url
+        if obj.proof_of_address:
+            documents['proof_of_address'] = request.build_absolute_uri(obj.proof_of_address.url) if request else obj.proof_of_address.url
+        if obj.business_registration:
+            documents['business_registration'] = request.build_absolute_uri(obj.business_registration.url) if request else obj.business_registration.url
+        
+        return documents
+    
+    def get_submitted_at_formatted(self, obj):
+        """Formatage de la date de soumission"""
+        if obj.kyc_submitted_at:
+            return obj.kyc_submitted_at.strftime('%d/%m/%Y %H:%M')
+        return None
+    
+class AdminVendorKYCRecordSerializer(serializers.ModelSerializer):
+    vendor_email = serializers.CharField(source='vendor.email')
+    vendor_name = serializers.CharField(source='vendor.get_full_name')
+    shop_name = serializers.CharField(source='vendor_profile.shop_name')
+
+    class Meta:
+        model = VendorKYCRecord
+        fields = [
+            'id',
+            'vendor_email',
+            'vendor_name',
+            'shop_name',
+            'id_type',
+            'id_number',
+            'id_front_image',
+            'id_back_image',
+            'selfie_with_id',
+            'proof_of_address',
+            'business_registration',
+            'status',
+            'submitted_at',
+            'reviewed_at',
+            'reviewed_by',
+            'rejection_reason',
+            'confidence_score',
+        ]

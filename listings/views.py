@@ -59,6 +59,14 @@ class ListingViewSet(viewsets.ModelViewSet):
     
 
     # listings/views.py
+    def get_object(self):
+        """
+        Permet à certaines actions de récupérer n'importe quelle annonce,
+        pas seulement celles avec status='active'.
+        """
+        if self.action in ['update_listing', 'delete_listing', 'restock', 'toggle_status']:
+            return Listing.objects.get(pk=self.kwargs['pk'])
+        return super().get_object()
 
     
 
@@ -232,6 +240,213 @@ class ListingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         return super().create(request, *args, **kwargs)
+    
+    @action(detail=True, methods=['put', 'patch'], url_path='update',
+            permission_classes=[IsAuthenticated, IsOwner])
+    def update_listing(self, request, pk=None):
+        """
+        Mettre à jour une annonce (PUT pour remplacement complet, PATCH pour partiel)
+        """
+        listing = self.get_object()
+        
+        # Vérifier que le vendeur peut modifier cette annonce
+        if listing.user != request.user:
+            return Response(
+                {'error': 'Vous ne pouvez modifier que vos propres annonces.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Utiliser le serializer approprié
+        serializer = ListingCreateSerializer(
+            listing,
+            data=request.data,
+            partial=request.method == 'PATCH',
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            updated_listing = serializer.save()
+            
+            # Gérer les nouvelles images si présentes
+            if 'images' in request.data and request.data['images']:
+                # Supprimer les anciennes images ? (optionnel)
+                # listing.images.all().delete()
+                
+                # Ajouter les nouvelles images
+                for image in request.data.getlist('images'):
+                    Image.objects.create(listing=updated_listing, image=image)
+            
+            return Response({
+                'message': 'Annonce mise à jour avec succès',
+                'listing': ListingSerializer(updated_listing).data
+            }, status=status.HTTP_200_OK)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['delete'], 
+            permission_classes=[IsAuthenticated, IsOwner])
+    def delete_listing(self, request, pk=None):
+        """
+        Supprimer une annonce
+        """
+        listing = self.get_object()
+        
+        # Vérifier que le vendeur peut supprimer cette annonce
+        if listing.user != request.user:
+            return Response(
+                {'error': 'Vous ne pouvez supprimer que vos propres annonces.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Vérifier s'il y a des commandes en cours
+        pending_orders = listing.orders.filter(
+            status__in=['pending', 'confirmed', 'shipped']
+        ).exists()
+        
+        if pending_orders:
+            return Response({
+                'error': 'Impossible de supprimer cette annonce car elle a des commandes en cours.',
+                'solution': 'Désactivez l\'annonce plutôt que de la supprimer.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Sauvegarder le titre pour le message de confirmation
+        title = listing.title
+        
+        # Supprimer l'annonce
+        listing.delete()
+        
+        return Response({
+            'message': f'Annonce "{title}" supprimée avec succès',
+            'success': True
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], 
+            permission_classes=[IsAuthenticated])
+    def bulk_delete(self, request):
+        """
+        Supprimer plusieurs annonces en masse
+        """
+        listing_ids = request.data.get('listing_ids', [])
+        
+        if not listing_ids:
+            return Response({
+                'error': 'Aucune annonce sélectionnée'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Filtrer uniquement les annonces de l'utilisateur
+        listings = Listing.objects.filter(
+            id__in=listing_ids,
+            user=request.user
+        )
+        
+        # Vérifier les commandes en cours
+        for listing in listings:
+            if listing.orders.filter(
+                status__in=['pending', 'confirmed', 'shipped']
+            ).exists():
+                return Response({
+                    'error': f'L\'annonce "{listing.title}" a des commandes en cours et ne peut pas être supprimée.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        count = listings.count()
+        listings.delete()
+        
+        return Response({
+            'message': f'{count} annonce(s) supprimée(s) avec succès',
+            'count': count
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], 
+            permission_classes=[IsAuthenticated, IsOwner])
+    def toggle_status(self, request, pk=None):
+        """
+        Activer/Désactiver une annonce
+        """
+        listing = self.get_object()
+        
+        if listing.user != request.user:
+            return Response(
+                {'error': 'Action non autorisée'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        new_status = request.data.get('status')
+        
+        if new_status not in ['active', 'expired']:
+            return Response({
+                'error': 'Statut invalide. Utilisez "active" ou "expired".'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        listing.status = new_status
+        listing.save()
+        
+        return Response({
+            'message': f'Annonce {"activée" if new_status == "active" else "désactivée"} avec succès',
+            'status': listing.status,
+            'listing': ListingSerializer(listing).data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['delete'], 
+            permission_classes=[IsAuthenticated, IsOwner])
+    def delete_image(self, request, pk=None):
+        """
+        Supprimer une image spécifique d'une annonce
+        """
+        listing = self.get_object()
+        
+        if listing.user != request.user:
+            return Response(
+                {'error': 'Action non autorisée'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        image_id = request.data.get('image_id')
+        
+        if not image_id:
+            return Response({
+                'error': 'ID de l\'image requis'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            image = listing.images.get(id=image_id)
+            image.delete()
+            
+            return Response({
+                'message': 'Image supprimée avec succès',
+                'listing': ListingSerializer(listing).data
+            }, status=status.HTTP_200_OK)
+            
+        except Image.DoesNotExist:
+            return Response({
+                'error': 'Image non trouvée'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['get'], 
+            permission_classes=[IsAuthenticated])
+    def my_listings(self, request):
+        """
+        Récupérer toutes les annonces du vendeur connecté
+        """
+        queryset = Listing.objects.filter(user=request.user)
+        
+        # Filtres optionnels
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        # Tri
+        order_by = request.query_params.get('order_by', '-created_at')
+        if order_by.lstrip('-') in ['title', 'price', 'created_at', 'status', 'views_count']:
+            queryset = queryset.order_by(order_by)
+        
+        # Pagination
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 # 🔥 NOUVEAU : ViewSet pour les commandes
 class OrderViewSet(viewsets.ModelViewSet):

@@ -3,6 +3,7 @@ from django.utils.deprecation import MiddlewareMixin
 from django.http import JsonResponse
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken
+from rest_framework.permissions import BasePermission
 import jwt
 from django.conf import settings
 
@@ -61,3 +62,15 @@ class JWTAuthenticationMiddleware(MiddlewareMixin):
             )
         
         return None
+    
+class IsVerifiedSeller(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        return (
+            user.is_authenticated
+            and user.role == 'seller'
+            and hasattr(user, 'vendor_profile')
+            and user.vendor_profile.status == 'approved'
+            and user.vendor_profile.verification_status == 'verified'
+            and not user.is_seller_pending
+        )

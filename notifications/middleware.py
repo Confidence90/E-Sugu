@@ -26,7 +26,7 @@ class NotificationAuditMiddleware:
                 'timestamp': timezone.now().isoformat(),
                 'admin_id': request.user.id,
                 'admin_email': request.user.email,
-                'path': request.path,
+                'path': request.path, 
                 'method': request.method,
                 'status_code': response.status_code,
                 'user_agent': request.META.get('HTTP_USER_AGENT', ''),

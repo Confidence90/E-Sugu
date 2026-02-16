@@ -13,7 +13,7 @@ from .forms import UserCreationForm, UserChangeForm
 import random
 from django.core.mail import EmailMessage
 from django.contrib import messages
-from .models import OneTimePassword
+from .models import *
 
 
 # 📊 Filtre personnalisé : activité récente
@@ -233,3 +233,54 @@ L'équipe {site_name}
             )
     
     demander_reinitialisation.short_description = "📧 Envoyer email de réinitialisation"
+
+@admin.register(VendorProfile)
+class VendorProfileAdmin(admin.ModelAdmin):
+    list_display = ['user', 'shop_name', 'verification_status', 'kyc_confidence_score', 'kyc_submitted_at', 'actions']
+    list_filter = ['verification_status', 'account_type', 'status']
+    search_fields = ['shop_name', 'user__email', 'user__first_name', 'user__last_name']
+    readonly_fields = ['kyc_submitted_at', 'kyc_reviewed_at']
+    
+    fieldsets = (
+        ('Informations boutique', {
+            'fields': ('shop_name', 'user')
+        }),
+        ('Documents KYC', {
+            'fields': ('id_front_image', 'id_back_image', 'proof_of_address', 'business_registration')
+        }),
+        ('Statut', {
+            'fields': ('verification_status', 'kyc_confidence_score', 'kyc_rejection_reason')
+        }),
+        ('Dates', {
+            'fields': ('kyc_submitted_at', 'kyc_reviewed_at', 'kyc_reviewed_by')
+        }),
+    )
+    
+    def admin_actions(self, obj):
+        """Afficher les boutons d'action pour l'admin"""
+        if obj.verification_status == 'pending':
+            return format_html(
+                '<div class="admin-actions">'
+                '<a class="button approve-button" href="/api/users/admin/kyc/{}/approve/" '
+                'onclick="return confirm(\'Êtes-vous sûr de vouloir approuver ce KYC ?\')">'
+                '✓ Approuver KYC</a>&nbsp;'
+                '<a class="button reject-button" href="/api/users/admin/kyc/{}/reject/" '
+                'onclick="return confirm(\'Êtes-vous sûr de vouloir rejeter ce KYC ?\')">'
+                '✗ Rejeter KYC</a>'
+                '</div>',
+                obj.user_id, obj.user_id
+            )
+        return format_html(
+            '<span class="status-badge {}">{}</span>',
+            obj.verification_status,
+            obj.get_verification_status_display()
+        )
+    admin_actions.short_description = 'Actions Admin'
+    admin_actions.allow_tags = True
+    
+    class Media:
+        css = {
+            'all': (
+                'css/admin-custom.css',
+            )
+        }

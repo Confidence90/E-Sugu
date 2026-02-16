@@ -123,23 +123,27 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     
     def save(self, *args, **kwargs):
-        # 🔥 CORRECTION: Synchronisation automatique rôle ↔ statut vendeur
         if self.role == 'seller':
             self.is_seller = True
-            # Si le profil vendeur est complété, approuver automatiquement
-            if hasattr(self, 'vendor_profile') and self.vendor_profile.is_completed:
-                self.is_seller_pending = False
+            self.is_seller_pending = True  # Toujours bloqué tant que l’admin n’a pas validé
         elif self.role == 'admin':
             self.is_seller = False
             self.is_seller_pending = False
-        else:  # buyer
+        else:
             self.is_seller = False
             self.is_seller_pending = False
-            
+
         super().save(*args, **kwargs)
+
     def can_create_listing(self):
-        """Vérifie si l'utilisateur peut créer une annonce"""
-        return self.role == 'seller' and self.is_seller and not self.is_seller_pending
+        return (
+            self.role == 'seller'
+            and hasattr(self, 'vendor_profile')
+            and self.vendor_profile.status == 'approved'
+            and self.vendor_profile.verification_status == 'verified'
+            and not self.is_seller_pending
+        )
+
     def get_token(self):
         refresh = RefreshToken.for_user(self)
         return {
@@ -191,6 +195,7 @@ class OneTimePassword(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     code = models.CharField(max_length=6, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    is_used = models.BooleanField(default=False)
 
     def is_valid(self):
         from django.utils import timezone
@@ -255,7 +260,9 @@ class VendorProfile(models.Model):
     tax_id = models.CharField(max_length=100, blank=True, null=True)
     vat_number = models.CharField(max_length=100, blank=True, null=True)
     legal_address = models.TextField(blank=True, null=True)
-    
+    id_type = models.CharField(max_length=20, choices=ID_TYPE_CHOICES, blank=True, null=True)
+    id_number = models.CharField(max_length=100, blank=True, null=True)
+
     # === INFORMATIONS EXPÉDITION ===
     shipping_zone = models.CharField(max_length=50, choices=SHIPPING_ZONE_CHOICES, default='Bamako')
     use_business_address = models.BooleanField(default=False)
@@ -283,6 +290,7 @@ class VendorProfile(models.Model):
     verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    selfie_with_id = models.ImageField(upload_to='kyc/selfie/', blank=True, null=True)
     verification_documents = models.JSONField(default=dict, blank=True, null=True)
     id_front_image = models.ImageField(upload_to='kyc/id_front/', blank=True, null=True)
     id_back_image = models.ImageField(upload_to='kyc/id_back/', blank=True, null=True)
@@ -304,15 +312,9 @@ class VendorProfile(models.Model):
     # Score de confiance KYC
     kyc_confidence_score = models.IntegerField(default=0)
 
-    def is_kyc_complete(self):
-        """Vérifier si le KYC est complètement rempli"""
-        required_fields = [
-            self.id_type, self.id_front_image, self.proof_of_address
-        ]
-        if self.account_type == 'company':
-            required_fields.append(self.business_registration)
-        return all(field for field in required_fields)
     
+
+
     def calculate_kyc_score(self):
         """Calculer un score de confiance KYC"""
         score = 0
@@ -438,3 +440,49 @@ class PendingVendorRegistration(models.Model):
     
     class Meta:
         ordering = ['-created_at']
+
+class VendorKYCRecord(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    vendor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='kyc_records')
+    vendor_profile = models.ForeignKey(VendorProfile, on_delete=models.CASCADE, related_name='kyc_history')
+
+    id_type = models.CharField(max_length=20)
+    id_number = models.CharField(max_length=100, blank=True, null=True)
+
+    id_front_image = models.ImageField(upload_to='kyc_records/id_front/')
+    id_back_image = models.ImageField(upload_to='kyc_records/id_back/', blank=True, null=True)
+    selfie_with_id = models.ImageField(upload_to='kyc_records/selfie/')
+    proof_of_address = models.ImageField(upload_to='kyc_records/address/', blank=True, null=True)
+    business_registration = models.ImageField(upload_to='kyc_records/business/', blank=True, null=True)
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    rejection_reason = models.TextField(blank=True, null=True)
+
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    reviewed_by = models.ForeignKey(
+        User, null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='reviewed_kyc_records'
+    )
+
+    confidence_score = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['-submitted_at']
+
+    def __str__(self):
+        return f"KYC {self.vendor.email} - {self.status}"
+    
+    def is_complete(self):
+        required_fields = [
+            self.id_type,
+            self.id_front_image,
+            self.selfie_with_id,
+        ]
+        return all(required_fields)

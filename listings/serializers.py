@@ -52,15 +52,20 @@ class ListingCreateSerializer(serializers.ModelSerializer):
             'category', 'images', 'is_featured', 'quantity'
         ]
     def validate(self, attrs):
-        # 🔥 VÉRIFICATION DU STATUT VENDEUR
-        user = self.context['request'].user
-        if not user.can_create_listing():
-            raise serializers.ValidationError({
-                'non_field_errors': [
-                    "Vous devez être un vendeur vérifié pour publier des annonces. "
-                    "Complétez votre profil vendeur et attendez la validation."
-                ]
-            })
+        # 🔥 CORRECTION: Vérifier si c'est une création ou une mise à jour
+        request = self.context['request']
+        user = request.user
+        
+        # Si c'est une création, vérifier le statut vendeur
+        if self.instance is None:  # Création
+            if not user.can_create_listing():
+                raise serializers.ValidationError({
+                    'non_field_errors': [
+                        "Vous devez être un vendeur vérifié pour publier des annonces. "
+                        "Complétez votre profil vendeur et attendez la validation."
+                    ]
+                })
+        # Si c'est une mise à jour, pas besoin de vérifier à nouveau
         return attrs
 
     def create(self, validated_data):

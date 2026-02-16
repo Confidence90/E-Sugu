@@ -68,12 +68,16 @@ urlpatterns = [
     path('admin/vendors/', admin_vendors_list, name='admin-vendors-list'),
     path('admin/vendors/stats/', admin_vendors_stats, name='admin-vendors-stats'),
     path('admin/vendors/<int:vendor_id>/status/', admin_update_vendor_status, name='admin-update-vendor-status'),
-    path('admin/vendors/<int:vendor_id>/approve-kyc/', admin_approve_vendor_kyc, name='admin-approve-vendor-kyc'),
-    path('admin/vendors/<int:vendor_id>/reject-kyc/', admin_reject_vendor_kyc, name='admin-reject-vendor-kyc'),
     path('admin/vendors/kyc/', AdminVendorKYCView.as_view(), name='admin-vendors-kyc'),
     path('admin/vendors/kyc/<int:vendor_id>/', AdminVendorKYCView.as_view(), name='admin-vendor-kyc-detail'),
     path('notifications/mark-all-read/', mark_all_notifications_read, name='mark-all-notifications-read'),
     path('vendor/out-of-stock-alerts/', out_of_stock_alerts, name='out-of-stock-alerts'),
     path('vendor/kyc/submit/', VendorKYCSumbitView.as_view(), name='vendor-kyc-submit'),
     path('admin_kyc_dashboard/', admin_kyc_dashboard, name='admin-kyc-dashboard'),
+    path('admin/kyc/', admin_vendor_kyc_list, name='admin_kyc_list'),
+    path('admin/kyc/stats/', admin_kyc_stats, name='admin_kyc_stats'),
+    path('admin/kyc/<int:vendor_id>/', admin_vendor_kyc_detail, name='admin_kyc_detail'),
+    path('admin/kyc/<int:vendor_id>/approve/', admin_approve_vendor_kyc, name='admin_kyc_approve'),
+    path('admin/kyc/<int:vendor_id>/reject/', admin_reject_vendor_kyc),
+
 ] + router.urls
