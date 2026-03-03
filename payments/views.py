@@ -10,31 +10,13 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from .models import Transaction
 from listings.models import Listing
-from .serializers import TransactionSerializer, CreateTransactionSerializer, PaymentConfirmationSerializer
-from .services.stripe_service import StripeService
-
-logger = logging.getLogger(__name__)
-
-# payments/views.py
-# payments/views.py
-# payments/views.py
-import stripe
-import logging
-from decimal import Decimal
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-from django.conf import settings
-from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
-from .models import Transaction
-from listings.models import Listing
 from paniers.models import Panier, PanierItem  # Import des modèles panier
 from .serializers import TransactionSerializer, CreateTransactionSerializer, PaymentConfirmationSerializer
 from .services.stripe_service import StripeService
-
+from commandes.models import Order, OrderItem
 logger = logging.getLogger(__name__)
+from django.utils import timezone
 
 class TransactionView(APIView):
     permission_classes = [IsAuthenticated]
@@ -92,164 +74,121 @@ class TransactionView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def process_panier_payment(self, request, payment_method):
-        """
-        Traiter le paiement du panier complet
-        """
         try:
-            # RÉCUPÉRATION ET VALIDATION DU PANIER
             panier = Panier.objects.get(user=request.user)
             panier_items = panier.items.all().select_related('listing')
-            
+
             if not panier_items.exists():
-                print("❌ Panier vide détecté lors de la vérification initiale")
-                return Response(
-                    {'error': 'Votre panier est vide. Impossible de procéder au paiement.'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-            )
-            print(f"🛒 Panier trouvé: {panier_items.count()} articles")
-            for item in panier_items:
-                print(f"  - {item.listing.title} x{item.quantity}")
-            
-            # VALIDATION DU PANIER
-            can_create, validation_message = panier.can_create_order()
-            if not can_create:
-                return Response(
-                    {'error': validation_message}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # CALCUL DU MONTANT TOTAL DU PANIER
-            total_amount = float(panier.total_price())
-            
-            logger.info(f"🛒 Paiement panier - User: {request.user.id}, Articles: {panier_items.count()}, Total: {total_amount} XOF")
-            
-            # VALIDATION DU MONTANT
-            try:
-                StripeService.validate_amount(total_amount, 'xof')
-            except ValidationError as e:
-                return Response(
-                    {'error': f'Montant invalide: {str(e)}'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # VÉRIFICATION DU NUMÉRO DE TÉLÉPHONE
+                return Response({'error': 'Panier vide'}, status=400)
+
             if not request.user.phone:
-                return Response(
-                    {'error': 'Numéro de téléphone requis pour effectuer un paiement'}, 
-                    status=status.HTTP_400_BAD_REQUEST
+                return Response({'error': 'Numéro requis'}, status=400)
+
+            # ==============================
+            # Création Order
+            # ==============================
+            shipping_data = request.data.get('shipping_address', {})
+            shipping_method_data = request.data.get('shipping_method', {})
+
+            order = Order.objects.create(
+                user=request.user,
+                status='pending',
+                shipping_address=shipping_data.get('address', ''),
+                shipping_method=shipping_method_data.get('name', ''),
+                total_price=panier.total_price(),
+                order_number=f"ORD-{timezone.now().strftime('%y%m%d%H%M%S')}-{request.user.id}"
+            )
+
+            # ==============================
+            # Création OrderItems
+            # ==============================
+            for item in panier_items:
+                OrderItem.objects.create(
+                    order=order,
+                    listing=item.listing,
+                    quantity=item.quantity,
+                    price=item.listing.price
                 )
-            
-            # CRÉATION DU PAIEMENT STRIPE
+
+            order.update_total()
+
+            total_amount = float(order.total_price)
+
+            # Validation Stripe
+            StripeService.validate_amount(total_amount, 'xof')
+
             phone_full = f"{request.user.country_code}{request.user.phone}"
-            
+
             payment_intent = StripeService.create_payment_intent_for_mobile(
                 amount=total_amount,
-                phone=phone_full,  # Utilisation de 'phone' au lieu de 'phone_number'
+                phone=phone_full,
                 payment_method=payment_method
             )
+
+            # Ajouter metadata Stripe
             stripe.PaymentIntent.modify(
                 payment_intent.id,
                 metadata={
+                    'order_id': str(order.id),
                     'user_id': str(request.user.id),
-                    'payment_type': 'panier'
                 }
             )
-            
-            # CRÉATION DES TRANSACTIONS DANS UNE TRANSACTION BDD
+
+            # ==============================
+            # Création Transactions (avec commission)
+            # ==============================
             with db_transaction.atomic():
                 transactions = []
                 total_commission = Decimal('0.00')
                 total_net_amount = Decimal('0.00')
-                
-                
-                for panier_item in panier_items:
-                    # Calcul des montants pour cet article
-                    item_total_amount = panier_item.quantity * panier_item.listing.price
-                    item_commission = item_total_amount * Decimal('0.07')
-                    item_net_amount = item_total_amount - item_commission
-                    
-                    # Créer une transaction pour chaque article du panier
-                    transaction = Transaction(
-                        listing=panier_item.listing,
-                        buyer=request.user,
-                        seller=panier_item.listing.user,
-                        quantity=panier_item.quantity,
-                        amount=panier_item.listing.price,  # Prix unitaire
-                        total_amount=item_total_amount,  # Total pour cet article
-                        commission=item_commission,
-                        net_amount=item_net_amount,
+
+                for item in panier_items:
+                    item_total = item.quantity * item.listing.price
+                    commission = item_total * Decimal('0.07')
+                    net_amount = item_total - commission
+
+                    transaction = Transaction.objects.create(
+                        listing=item.listing,
+                        user=request.user,
+                        seller=item.listing.user,
+                        quantity=item.quantity,
+                        amount=item.listing.price,
+                        total_amount=item_total,
+                        commission=commission,
+                        net_amount=net_amount,
                         status='pending',
                         payment_method=payment_method,
-                        stripe_payment_intent_id=payment_intent.id
+                        stripe_payment_intent_id=payment_intent.id,
+                        order=order
                     )
-                    
-                    transaction.save()
+
                     transactions.append(transaction)
-                    
-                    # Accumuler les totaux
-                    total_commission += item_commission
-                    total_net_amount += item_net_amount
-                    
-                    logger.info(f"✅ Transaction créée: {transaction.id} - {panier_item.listing.title} x{panier_item.quantity}")
-                
-                # VIDER LE PANIER après création des transactions
-               
-                logger.info(f"🛒 Panier vidé après création des transactions")
-            
-            # PRÉPARATION DE LA RÉPONSE
-            response_data = {
+                    total_commission += commission
+                    total_net_amount += net_amount
+
+            return Response({
                 'status': 'requires_payment_method',
                 'transaction_ids': [t.id for t in transactions],
                 'payment_intent_id': payment_intent.id,
                 'client_secret': payment_intent.client_secret,
                 'total_amount': total_amount,
+                'order_id': order.id,
                 'total_commission': float(total_commission),
                 'total_net_amount': float(total_net_amount),
-                'items_count': len(transactions),
-                'currency': 'xof',
-                'items': [
-                    {
-                        'listing_id': t.listing.id,
-                        'listing_title': t.listing.title,
-                        'quantity': t.quantity,
-                        'unit_price': float(t.amount),
-                        'total_price': float(t.total_amount),
-                        'commission': float(t.commission),
-                        'net_amount': float(t.net_amount)
-                    }
-                    for t in transactions
-                ]
-            }
-            
-            return Response(response_data, status=status.HTTP_201_CREATED)
-            
-        except Panier.DoesNotExist:
-            logger.warning(f"⚠️ Panier non trouvé pour l'utilisateur: {request.user.id}")
-            return Response(
-                {'error': 'Panier non trouvé'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except ValidationError as e:
-            logger.error(f"❌ Erreur de validation: {e}")
-            return Response(
-                {'error': f'Erreur de paiement: {str(e)}'}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        except Exception as e:
-            logger.error(f"❌ Erreur inattendue lors du paiement panier: {e}", exc_info=True)
-            return Response(
-                {'error': 'Erreur interne lors du traitement du paiement'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+                'currency': 'xof'
+            }, status=201)
 
-    # Duplicate definition removed: process_panier_payment
+        except Exception as e:
+            logger.error(f"Erreur paiement panier: {e}", exc_info=True)
+            return Response({'error': 'Erreur interne'}, status=500)
+        # Duplicate definition removed: process_panier_payment
 
     def get(self, request):
         """
         Récupérer les transactions de l'utilisateur
         """
         try:
-            transactions = Transaction.objects.filter(buyer=request.user) | Transaction.objects.filter(seller=request.user)
+            transactions = Transaction.objects.filter(user=request.user) | Transaction.objects.filter(seller=request.user)
             serializer = TransactionSerializer(transactions, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
@@ -258,9 +197,6 @@ class TransactionView(APIView):
                 {'error': 'Erreur lors de la récupération des transactions'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-# payments/views.py - Dans PaymentConfirmationView
-# payments/views.py
 class PaymentConfirmationView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -274,12 +210,12 @@ class PaymentConfirmationView(APIView):
         payment_intent_id = serializer.validated_data['payment_intent_id']
 
         try:
-            # 🔥 Toujours filtrer uniquement les transactions en attente
+            # 🔥 Récupérer les transactions en attente
             transactions = Transaction.objects.filter(
                 stripe_payment_intent_id=payment_intent_id,
-                buyer=request.user,
+                user=request.user,
                 status='pending'
-            )
+            ).select_related('order')
 
             logger.info(f"📊 Transactions en attente trouvées: {transactions.count()}")
 
@@ -299,67 +235,61 @@ class PaymentConfirmationView(APIView):
                     'message': f"Paiement en statut: {payment_intent.status}"
                 }, status=status.HTTP_200_OK)
 
-            # 🔥 Paiement OK → traitement atomique
+            # 🔥 TRAITEMENT ATOMIQUE AVEC VIDAGE DU PANIER
             with db_transaction.atomic():
-
-                orders_created = []
-                order_numbers = []
-                
+                orders_updated = []
+                # 1️⃣ Mettre à jour les transactions
                 for transaction in transactions:
-                    # Mettre la transaction en completed
-                    transaction.status = 'completed'
+                    transaction.status = 'held'  # ou 'completed' selon votre logique
+                    transaction.held_at = timezone.now()
                     transaction.save()
-
-                    # 🎯 CASE 1 : Une commande existe déjà → on confirme juste
+                    
+                    # Marquer le listing comme vendu
+                    transaction.listing.mark_as_sold(transaction.quantity)
                     if transaction.order:
-                        transaction.order.status = 'confirmed'
-                        transaction.order.save()
-
-                        orders_created.append(transaction.order)
-                        order_numbers.append(transaction.order.order_number)
-
-                    else:
-                        # 🎯 CASE 2 : Créer une nouvelle commande
-                        try:
-                            order = transaction.create_order_after_payment()
-                        
-
-                            if order:
-                                orders_created.append(order)
-                                order_numbers.append(order.order_number)
-                                logger.info(f"✅ Commande créée #{order.id}")
-                            else:
-                                logger.error(f"❌ Impossible de créer une commande pour transaction {transaction.id}")
-                        except Exception as e:
-                            logger.error(f"❌ Erreur création commande: {e}")
-                            logger.info("➡️ Tentative fallback…")
-                            order = transaction.create_order_fallback()
-                            continue
-                    # 🔥 Mise à jour du listing vendu
-                    try:
-                        transaction.listing.mark_as_sold(transaction.quantity)
-                    except Exception as e:
-                        logger.error(f"❌ Erreur mise à jour annonce: {e}")
-
-                # 🔥 Vider le panier
+                        order = transaction.order
+                        if order.status == 'pending':
+                            order.status = 'confirmed'
+                            order.save()
+                            orders_updated.append(order.id)
+                            
+                            # Notification au vendeur
+                            from notifications.models import Notification
+                            Notification.objects.create(
+                                user=transaction.seller,
+                                type='order_confirmed',
+                                content=f'Commande #{order.order_number} confirmée (paiement reçu)'
+                            )
+                # 2️⃣ 🔥 VIDER LE PANIER ICI - DANS LA MÊME TRANSACTION
                 try:
                     panier = Panier.objects.get(user=request.user)
                     items_removed = panier.items.count()
-                    panier.items.all().delete()
-                    panier_vide = True
-                    logger.info(f"🛒 Panier vidé ({items_removed} articles)")
+                    
+                    if items_removed > 0:
+                        panier.items.all().delete()
+                        logger.info(f"✅ Panier vidé immédiatement: {items_removed} articles supprimés")
+                        
+                        # Vérification
+                        if panier.items.count() == 0:
+                            panier_vide = True
+                        else:
+                            logger.error(f"❌ Le panier n'a pas pu être vidé complètement")
+                            panier_vide = False
+                    else:
+                        logger.info("ℹ️ Panier déjà vide")
+                        panier_vide = True
+                        
                 except Panier.DoesNotExist:
-                    panier_vide = False
+                    logger.warning("⚠️ Panier non trouvé, probablement déjà vidé")
+                    panier_vide = True
                     items_removed = 0
-                    logger.warning("⚠️ Aucun panier trouvé")
 
-            # 🔥 Réponse complète
+            # 🔥 Réponse avec confirmation explicite
             return Response({
                 'status': 'succeeded',
-                'message': f'Paiement confirmé - {len(orders_created)} commande(s) traitée(s)',
+                'message': 'Paiement confirmé et panier vidé avec succès',
+                'orders_confirmed': orders_updated,
                 'transactions_completed': transactions.count(),
-                'orders_created': [order.id for order in orders_created],
-                'orders_numbers': order_numbers,
                 'panier_vide': panier_vide,
                 'items_removed': items_removed
             }, status=status.HTTP_200_OK)
@@ -370,14 +300,38 @@ class PaymentConfirmationView(APIView):
                 {'error': f'Erreur interne: {str(e)}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+# payments/views.py - Nouvel endpoint
 
+class VerifyCartClearedView(APIView):
+    """
+    Vérifier que le panier a bien été vidé après paiement
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            panier = Panier.objects.get(user=request.user)
+            items_count = panier.items.count()
+            
+            return Response({
+                'cart_empty': items_count == 0,
+                'items_count': items_count,
+                'verified_at': timezone.now().isoformat()
+            }, status=status.HTTP_200_OK)
+            
+        except Panier.DoesNotExist:
+            return Response({
+                'cart_empty': True,
+                'items_count': 0,
+                'message': 'Panier non trouvé (considéré comme vide)'
+            }, status=status.HTTP_200_OK)
 class TransactionDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, id):
         try:
             transaction = Transaction.objects.get(id=id)
-            if transaction.buyer == request.user or transaction.seller == request.user:
+            if transaction.user == request.user or transaction.seller == request.user:
                 serializer = TransactionSerializer(transaction)
                 
                 # Récupérer les infos Stripe si disponible
@@ -412,7 +366,7 @@ class RefundView(APIView):
             if request.user != transaction.seller:  # Seul le vendeur peut initier un remboursement
                 return Response({'error': 'Non autorisé'}, status=status.HTTP_403_FORBIDDEN)
 
-            if transaction.status != 'completed':
+            if transaction.status != 'held':
                 return Response(
                     {'error': 'Seules les transactions complétées peuvent être remboursées'}, 
                     status=status.HTTP_400_BAD_REQUEST
@@ -528,8 +482,8 @@ class ClearCartAfterPaymentView(APIView):
             # Vérifier que le paiement est bien réussi
             transactions = Transaction.objects.filter(
                 stripe_payment_intent_id=payment_intent_id,
-                buyer=request.user,
-                status='completed'
+                user=request.user,
+                status='held'
             )
             
             if not transactions.exists():
@@ -576,7 +530,7 @@ class PaymentCleanupView(APIView):
                 # Supprimer les transactions en pending pour ce payment_intent
                 transactions = Transaction.objects.filter(
                     stripe_payment_intent_id=payment_intent_id,
-                    buyer=request.user,
+                    user=request.user,
                     status='pending'
                 )
                 

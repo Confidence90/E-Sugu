@@ -5,19 +5,22 @@ from listings.models import Listing
 from decimal import Decimal
 from notifications.models import Notification
 from commandes.models import Order, OrderItem
+from .services.stripe_service import StripeService
 import logging
 
 logger = logging.getLogger(__name__)
 
 class Transaction(models.Model):
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='transactions')
-    buyer = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='payment_transactions'
-    )
+    #buyer = models.ForeignKey(
+    #    User,
+    #    on_delete=models.CASCADE,
+    #    null=True,
+    #    blank=True,
+    #    related_name='payment_transactions'
+    #)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payment_transactions',null=True,
+        blank=True)
     seller = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sales')
     quantity = models.PositiveIntegerField(default=1) 
     total_amount = models.DecimalField(max_digits=12, null=True, decimal_places=2)  # Montant payé par l'acheteur
@@ -31,7 +34,9 @@ class Transaction(models.Model):
             ('pending', 'En attente'),
             ('completed', 'Complété'),
             ('failed', 'Échoué'),
+            ('held', 'En escrow'),
             ('refunded', 'Remboursé'),
+            ('released', 'Released to seller'),
             ('requires_payment_method', 'Méthode de paiement requise'),
             ('requires_confirmation', 'Confirmation requise'),
             ('requires_action', 'Action requise'),
@@ -41,14 +46,26 @@ class Transaction(models.Model):
         ],
         default='pending' 
     )
-    payment_method = models.CharField(max_length=50, null=True)
+    order = models.ForeignKey(
+        'commandes.Order', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='transactions'
+    )
+
+    payment_method = models.CharField(max_length=50, null=True, blank=True)
     stripe_payment_intent_id = models.CharField(max_length=255, null=True, blank=True)
     stripe_refund_id = models.CharField(max_length=255, null=True, blank=True)
     stripe_transfer_id = models.CharField(max_length=255, null=True, blank=True)  # ID du transfert vers le vendeur
     stripe_account_id = models.CharField(max_length=255, null=True, blank=True)  # Pour Stripe Connect
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
+    class Meta:
+        indexes = [
+            models.Index(fields=['order', 'status']),
+            models.Index(fields=['stripe_payment_intent_id']),
+        ]
     def __str__(self):
         return f"Transaction {self.id} - {self.listing.title}"
 
@@ -93,13 +110,7 @@ class Transaction(models.Model):
         
         return True
     
-    order = models.ForeignKey(
-        'commandes.Order', 
-        on_delete=models.SET_NULL, 
-        null=True, 
-        blank=True,
-        related_name='transactions'
-    )
+    
     
     def create_order_after_payment(self):
         """Créer une commande après paiement réussi"""
@@ -112,8 +123,7 @@ class Transaction(models.Model):
                 order_number = f"ORD-{self.id}-{date_str}"
                 # Créer la commande
                 order = Order.objects.create(
-                    buyer=self.buyer,
-                    user=self.buyer, 
+                    user=self.user, 
                     listing=self.listing, 
                     quantity=self.quantity,  
                     total_price=self.total_amount,
@@ -146,6 +156,25 @@ class Transaction(models.Model):
                 # 🔥 SOLUTION DE FALLBACK
                 return self.create_order_fallback()
         return self.order
+    def release_payment_to_seller(self):
+        try:
+            if self.status != 'held':
+                raise ValueError("La transaction doit être en escrow (held)")
+
+            if self.stripe_account_id:
+                StripeService.transfer_to_seller(
+                    amount=self.net_amount,
+                    destination_account_id=self.stripe_account_id
+                )
+
+            self.status = 'transferred'
+            self.save()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Erreur libération paiement: {e}")
+            return False
     
 def create_order_fallback(self):
     """Approche simple pour créer une commande (fallback)"""
@@ -155,8 +184,8 @@ def create_order_fallback(self):
         
         # Créer avec seulement les champs absolument requis
         order = Order.objects.create(
-            buyer=self.buyer,
-            user=self.buyer,
+           
+            user=self.user,
             listing=self.listing,
             quantity=self.quantity,
             total_price=self.total_amount,
@@ -181,25 +210,3 @@ def create_order_fallback(self):
         logger.error(f"❌ Échec création fallback: {e}")
         return None
     
-#def create_order_simple(self):
-    """Approche simple pour créer une commande"""
-#    try:
-        # Créer avec seulement les champs absolument requis
-#        order = Order.objects.create(
-#            buyer_id=self.buyer.id,
-#           user_id=self.buyer.id,  # 🔥 NE PAS OUBLIER user !
-#            listing_id=self.listing.id,
-#            quantity=self.quantity,
- #           total_price=self.total_amount,
-#            status='confirmed',
-#            order_number=f"FALLBACK-{self.id}"
-#        )
-        
-#       self.order = order
-#        self.save()
- #       logger.info(f"✅ Commande fallback #{order.id} créée")
- #       return order
-        
- #   except Exception as e:
- #       logger.error(f"❌ Échec création simple: {e}")
- #       return None

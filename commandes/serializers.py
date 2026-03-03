@@ -18,6 +18,7 @@ class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     order_number = serializers.CharField(read_only=True)
     pending_since = serializers.SerializerMethodField()
+    user = serializers.PrimaryKeyRelatedField( read_only=True)
     
     class Meta:
         model = Order
@@ -40,7 +41,7 @@ class VendorOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = [
-            'id', 'order_number', 'buyer', 'vendor_items', 
+            'id', 'order_number', 'user', 'vendor_items', 
             'vendor_total', 'status', 'created_at', 'is_packaged'
         ]
     

@@ -51,7 +51,8 @@ urlpatterns = [
     path('vendor/debug-visitors/', debug_visitor_stats, name='debug-visitors'),
     path('vendor/test-visitor-data/', test_visitor_data, name='test-visitor-data'),
     path('track-dashboard-view/', track_dashboard_view, name='track-dashboard-view'),
-    
+    path('upgrade-to-seller/', upgrade_to_seller, name='upgrade-to-seller'),
+    path('check-upgrade-status/', check_upgrade_status, name='check-upgrade-status'),
     # URLs Admin
     path('admin/stats/', AdminUserViewSet.as_view({'get': 'stats'}), name='admin-stats'),
     path('admin/users/', admin_users_list, name='admin-users-list'),

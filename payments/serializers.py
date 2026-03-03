@@ -6,23 +6,25 @@ from users.serializers import UserProfileSerializer
 
 class TransactionSerializer(serializers.ModelSerializer):
     listing_title = serializers.CharField(source='listing.title', read_only=True)
-    buyer_name = serializers.CharField(source='buyer.get_full_name', read_only=True)
+    buyer_name = serializers.CharField(source='user.get_full_name', read_only=True)
     seller_name = serializers.CharField(source='seller.get_full_name', read_only=True)
 
     class Meta:
         model = Transaction
         fields = [
-            'id', 'listing', 'listing_title', 'buyer', 'buyer_name', 
+            'id', 'listing', 'listing_title', 'user', 'buyer_name', 
             'seller', 'seller_name', 'amount', 'quantity', 'total_amount','commission', 'net_amount', 
             'status', 'payment_method', 'stripe_payment_intent_id',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['buyer', 'seller', 'commission', 'net_amount']
+        read_only_fields = ['user', 'seller', 'commission', 'net_amount']
 
 class CreateTransactionSerializer(serializers.Serializer):
     listing_id = serializers.IntegerField(required=False)
     payment_method = serializers.CharField()
     payment_token = serializers.CharField(required=False)  # Pour Stripe Elements
+    shipping_address = serializers.JSONField(required=False)  # ou un nested serializer
+    shipping_method = serializers.JSONField(required=False)
 
     def validate(self, data):
         """

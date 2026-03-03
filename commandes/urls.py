@@ -45,4 +45,15 @@ urlpatterns = [
     path('<int:order_id>/facture/', InvoiceView.as_view(), name='generate-invoice'),
     path('<int:order_id>/telecharger-facture/', InvoiceView.as_view(), name='download-invoice'),  # Alias
     path('<int:order_id>/invoice-url/', InvoiceURLView.as_view(), name='invoice-url'),
+     path('<int:order_id>/confirmer-reception/', 
+         ConfirmDeliveryView.as_view(), 
+         name='confirm-delivery'),
+    
+    path('<int:order_id>/statut-confirmation/', 
+         DeliveryConfirmationStatusView.as_view(), 
+         name='delivery-status'),
+    path('admin/confirm-order/<int:order_id>/', admin_confirm_order, name='admin-confirm-order'),
+    path('vendeur/<int:order_id>/expedier/', 
+         MarkAsShippedView.as_view(), 
+         name='mark-as-shipped'),
 ]

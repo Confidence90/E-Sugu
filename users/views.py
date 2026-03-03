@@ -2,6 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework import viewsets
 from django.db.models import F
+from django.db import transaction
+import jwt
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from .middleware import IsVerifiedSeller
@@ -156,7 +158,7 @@ class BuyerRegisterView(APIView):
 # Inscription vendeur
 class VendorRegisterView(APIView):
     permission_classes = [AllowAny]
-
+    authentication_classes = []
     def post(self, request):
         serializer = VendorRegistrationSerializer(data=request.data)
         
@@ -698,26 +700,34 @@ class TestAuthenticationView(GenericAPIView):
 # users/views.py - MODIFIEZ GoogleLoginView pour ajouter plus de logs
 class GoogleLoginView(APIView):
     permission_classes = [AllowAny]
-
+    
+    # 🔥 Mot de passe par défaut pour les utilisateurs Google
+    DEFAULT_GOOGLE_PASSWORD = "Demo@1234"
+    logger.info(f"BACKEND GOOGLE_CLIENT_ID: {settings.GOOGLE_CLIENT_ID}")
     def post(self, request):
         # Accepter les deux types de tokens
         access_token = request.data.get("access_token")
-        id_token_str = request.data.get("id_token")  # 🔥 AJOUTER CETTE LIGNE
-        
-        logger.debug(f"🔍 Requête Google reçue: access_token={access_token is not None}, id_token={id_token_str is not None}")
+        id_token_str = request.data.get("id_token")
+        if id_token_str and isinstance(id_token_str, str):
+            # Convert string to bytes
+            id_token_bytes = id_token_str.encode('utf-8')
+            decoded = jwt.decode(id_token_bytes, options={"verify_signature": False})
+            print(decoded["aud"])
+        elif id_token_str:
+            decoded = jwt.decode(id_token_str, options={"verify_signature": False})
+            print(decoded["aud"])
+        logger.debug(f" Requête Google reçue: access_token={access_token is not None}, id_token={id_token_str is not None}")
 
-        # 🔥 CORRECTION: Accepter soit access_token soit id_token
         if not access_token and not id_token_str:
             return Response(
                 {"error": "access_token ou id_token requis"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 🔥 STRATÉGIE: Traiter id_token en priorité (mobile)
+        # Traitement id_token (mobile)
         if id_token_str:
-            logger.info("📱 Traitement comme id_token (mobile)")
+            logger.info("📱Traitement comme id_token (mobile)")
             try:
-                # Vérifier le id_token avec Google
                 id_info = id_token.verify_oauth2_token(
                     id_token_str, 
                     GoogleAuthRequest(),
@@ -735,18 +745,51 @@ class GoogleLoginView(APIView):
                 first_name = id_info.get('given_name', '')
                 last_name = id_info.get('family_name', '')
                 
-                # Logique de création/récupération utilisateur...
-                user, created = User.objects.get_or_create(
-                    email=email,
-                    defaults={
-                        "username": email.split("@")[0],
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "is_active": True,
-                        "is_verified": True,
-                        "auth_provider": "google",
-                    }
-                )
+                # 🔥 Vérifier si l'utilisateur existe déjà
+                user = User.objects.filter(email=email).first()
+                
+                if user:
+                    # Utilisateur existant - mettre à jour si nécessaire
+                    logger.info(f"Utilisateur existant trouvé: {email}")
+                    created = False
+                else:
+                    # 🔥 NOUVEL UTILISATEUR - Créer avec mot de passe par défaut
+                    logger.info(f"Création nouvel utilisateur Google: {email}")
+                    
+                    base_username = email.split("@")[0]
+                    username = base_username
+                    counter = 1
+                    
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}_{counter}"
+                        counter += 1
+                    
+                    # 🔥 Créer l'utilisateur avec mot de passe par défaut
+                    user = User.objects.create(
+                        email=email,
+                        username=username,
+                        first_name=first_name,
+                        last_name=last_name,
+                        phone_full=None,
+                        is_verified=True,
+                        is_active=True,
+                        auth_provider="google",
+                        role='buyer',  # Rôle par défaut
+                    )
+                    
+                    # 🔥 Définir le mot de passe par défaut (hashé)
+                    user.set_password(self.DEFAULT_GOOGLE_PASSWORD)
+                    user.save()
+                    
+                    created = True
+                    
+                    # Créer SocialAccount pour lier le compte Google
+                    SocialAccount.objects.create(
+                        user=user,
+                        provider='google',
+                        uid=id_info.get('sub'),
+                        extra_data=id_info
+                    )
                 
                 # Générer les tokens JWT
                 refresh = RefreshToken.for_user(user)
@@ -759,21 +802,24 @@ class GoogleLoginView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "is_new_user": created,
-                    "message": "Connexion Google (mobile) réussie"
+                    "role": user.role,
+                    "is_seller": user.is_seller,
+                    "message": "Connexion Google (mobile) réussie",
+                    # 🔥 Retourner le mot de passe par défaut uniquement pour les nouveaux utilisateurs
+                    "default_password": self.DEFAULT_GOOGLE_PASSWORD if created else None,
                 })
                 
             except ValueError as e:
-                logger.error(f"❌ id_token invalide: {str(e)}")
+                logger.error(f" id_token invalide: {str(e)}")
                 return Response(
                     {"error": f"Token Google invalide: {str(e)}"},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
         
-        # 🔥 SINON, traiter access_token (web)
+        # Traitement access_token (web)
         elif access_token:
-            logger.info("🌐 Traitement comme access_token (web)")
+            logger.info(" Traitement comme access_token (web)")
             
-            # Vérification OFFICIELLE Google
             google_response = requests.get(
                 "https://www.googleapis.com/oauth2/v3/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -781,7 +827,7 @@ class GoogleLoginView(APIView):
             )
 
             if google_response.status_code != 200:
-                logger.error("❌ Access token Google invalide: %s", google_response.text)
+                logger.error(" Access token Google invalide: %s", google_response.text)
                 return Response(
                     {"error": "Token Google invalide"},
                     status=status.HTTP_401_UNAUTHORIZED
@@ -798,26 +844,66 @@ class GoogleLoginView(APIView):
             
             first_name = userinfo.get("given_name", "")
             last_name = userinfo.get("family_name", "")
+            google_id = userinfo.get("sub")
             
-            # 🔥 Création / récupération utilisateur
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    "username": email.split("@")[0],
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "is_active": True,
-                    "is_verified": True,
-                    "auth_provider": "google",
-                }
-            )
-
-            if not created:
-                user.is_active = True
-                user.is_verified = True
+            # 🔥 Vérifier si l'utilisateur existe déjà
+            user = User.objects.filter(email=email).first()
+            
+            if user:
+                # Utilisateur existant
+                logger.info(f"✅ Utilisateur existant trouvé: {email}")
+                created = False
+                
+                # Mettre à jour les informations si nécessaire
+                if not user.first_name and first_name:
+                    user.first_name = first_name
+                if not user.last_name and last_name:
+                    user.last_name = last_name
                 user.auth_provider = "google"
+                user.is_verified = True
+                user.is_active = True
                 user.save()
-
+                
+            else:
+                # 🔥 NOUVEL UTILISATEUR - Créer avec mot de passe par défaut
+                logger.info(f" Création nouvel utilisateur Google: {email}")
+                
+                base_username = email.split("@")[0]
+                username = base_username
+                counter = 1
+                
+                while User.objects.filter(username=username).exists():
+                    username = f"{base_username}_{counter}"
+                    counter += 1
+                
+                # 🔥 Créer l'utilisateur
+                user = User.objects.create(
+                    email=email,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    phone_full=None,
+                    is_verified=True,
+                    is_active=True,
+                    auth_provider="google",
+                    role='buyer',  # Rôle par défaut
+                )
+                
+                # 🔥 Définir le mot de passe par défaut
+                user.set_password(self.DEFAULT_GOOGLE_PASSWORD)
+                user.save()
+                
+                created = True
+                
+                # Créer SocialAccount si on a l'ID Google
+                if google_id:
+                    SocialAccount.objects.create(
+                        user=user,
+                        provider='google',
+                        uid=google_id,
+                        extra_data=userinfo
+                    )
+            
             # 🔥 JWT local
             refresh = RefreshToken.for_user(user)
 
@@ -829,7 +915,11 @@ class GoogleLoginView(APIView):
                 "first_name": user.first_name,
                 "last_name": user.last_name,
                 "is_new_user": created,
-                "message": "Connexion Google réussie"
+                "role": user.role,
+                "is_seller": user.is_seller,
+                "message": "Connexion Google réussie",
+                # 🔥 Retourner le mot de passe par défaut uniquement pour les nouveaux utilisateurs
+                "default_password": self.DEFAULT_GOOGLE_PASSWORD if created else None,
             })
         
         else:
@@ -912,18 +1002,13 @@ class FacebookLoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
-        logger.debug("🔍 Requête Facebook reçue: %s", request.data)
+        logger.debug("📱 Requête Facebook reçue: %s", request.data)
 
-        # 1️⃣ Récupération du token Facebook
+        # 1️⃣ Récupération du token OU du code
         access_token = request.data.get("access_token")
+        code = request.data.get("code")
+        redirect_uri = request.data.get("redirect_uri", "http://localhost:5173/auth/facebook/callback")
         
-        if not access_token:
-            logger.error("❌ Token Facebook manquant")
-            return Response(
-                {"error": "Token Facebook requis (access_token)."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         # 2️⃣ Vérification configuration
         facebook_app_id = settings.SOCIAL_AUTH_FACEBOOK_KEY
         facebook_app_secret = settings.SOCIAL_AUTH_FACEBOOK_SECRET
@@ -935,7 +1020,47 @@ class FacebookLoginView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        # 3️⃣ Validation du token auprès de Facebook
+        # 3️⃣ Si on a un CODE, l'échanger contre un ACCESS TOKEN
+        if code and not access_token:
+            try:
+                logger.info("🔄 Échange du code contre un token...")
+                token_url = "https://graph.facebook.com/v18.0/oauth/access_token"
+                params = {
+                    'client_id': facebook_app_id,
+                    'client_secret': facebook_app_secret,
+                    'redirect_uri': redirect_uri,
+                    'code': code
+                }
+                
+                response = requests.get(token_url, params=params)
+                token_data = response.json()
+                
+                if 'error' in token_data:
+                    logger.error("❌ Erreur échange code: %s", token_data)
+                    return Response(
+                        {"error": token_data['error'].get('message', 'Erreur échange code')},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                access_token = token_data['access_token']
+                logger.info("✅ Code échangé avec succès")
+                
+            except Exception as e:
+                logger.error("❌ Exception échange code: %s", str(e))
+                return Response(
+                    {"error": f"Erreur échange code: {str(e)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # 4️⃣ Vérifier qu'on a un token
+        if not access_token:
+            logger.error("❌ Token ou code manquant")
+            return Response(
+                {"error": "access_token ou code requis"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 5️⃣ Validation du token auprès de Facebook
         try:
             # Appel à l'API Facebook pour vérifier le token
             debug_token_url = "https://graph.facebook.com/debug_token"
@@ -954,8 +1079,8 @@ class FacebookLoginView(APIView):
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
             
-            # 4️⃣ Récupération des informations utilisateur
-            user_info_url = "https://graph.facebook.com/v12.0/me"
+            # 6️⃣ Récupération des informations utilisateur
+            user_info_url = "https://graph.facebook.com/v18.0/me"
             params = {
                 'access_token': access_token,
                 'fields': 'id,name,email,first_name,last_name,picture'
@@ -971,7 +1096,7 @@ class FacebookLoginView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             
-            # 5️⃣ Extraction des informations
+            # 7️⃣ Extraction des informations
             facebook_id = user_data.get("id")
             email = user_data.get("email")
             
@@ -984,7 +1109,7 @@ class FacebookLoginView(APIView):
             
             logger.info("👤 Authentification Facebook réussie pour: %s", email)
             
-            # 6️⃣ Récupération ou création de l'utilisateur
+            # 8️⃣ Récupération ou création de l'utilisateur
             try:
                 # Chercher d'abord par SocialAccount
                 try:
@@ -1040,7 +1165,7 @@ class FacebookLoginView(APIView):
                 created = True
                 logger.info("🆕 Nouvel utilisateur Facebook créé")
 
-            # 7️⃣ Mise à jour des informations
+            # 9️⃣ Mise à jour des informations
             user.auth_provider = "facebook"
             user.is_verified = True
             user.is_active = True
@@ -1052,7 +1177,7 @@ class FacebookLoginView(APIView):
                 
             user.save()
 
-            # 8️⃣ Génération des tokens JWT
+            # 🔟 Génération des tokens JWT
             refresh = RefreshToken.for_user(user)
 
             return Response(
@@ -1083,7 +1208,6 @@ class FacebookLoginView(APIView):
                 {"error": f"Erreur lors de l'authentification Facebook: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
 class AppleLoginView(APIView):
     def post(self, request, *args, **kwargs):
         logger.debug("Requête reçue: %s", request.data)
@@ -4248,6 +4372,8 @@ def admin_approve_vendor_kyc(request, vendor_id):
         vendor_profile.kyc_reviewed_by = request.user
         vendor_profile.save()
 
+        user.is_seller = True
+        user.role = 'seller'
         user.is_seller_pending = False
         user.is_active = True
         user.is_verified = True
@@ -4267,6 +4393,8 @@ def admin_approve_vendor_kyc(request, vendor_id):
                 'message': 'KYC approuvé avec succès',
             'vendor_id': user.id,
             'kyc_record_id': kyc_record.id,
+            'is_seller' : user.is_seller,
+            'role' : user.role
             },
             
         })
@@ -4493,3 +4621,178 @@ def create_vendor_notification(user, type, content):
         content=content,
         is_read=False
     )
+# users/views.py - Ajoutez cette vue
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upgrade_to_seller(request):
+    user = request.user
+
+    can_upgrade, message = user.can_upgrade_to_seller()
+    if not can_upgrade:
+        return Response({'error': message}, status=400)
+
+    shop_name = request.data.get('shop_name')
+    account_type = request.data.get('account_type', 'individual')
+
+    if not shop_name:
+        return Response(
+            {'error': 'Le nom de la boutique est requis.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        from django.db import transaction
+
+        with transaction.atomic():
+
+            vendor_profile, created = VendorProfile.objects.update_or_create(
+                user=user,
+                defaults={
+                    'shop_name': shop_name,
+                    'contact_name': user.get_full_name(),
+                    'contact_email': user.email,
+                    'contact_phone': user.phone_full,
+                    'account_type': account_type,
+                    'status': 'pending',
+                    'verification_status': 'pending',
+                }
+            )
+
+            user.role = 'seller'
+            user.save()
+
+        notify_admins_vendor_upgrade(user, vendor_profile)
+        send_upgrade_confirmation_email(user, vendor_profile)
+
+        return Response({
+            'message': 'Votre demande de conversion en vendeur a été enregistrée.',
+            'status': 'pending',
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Erreur lors de la conversion en vendeur: {str(e)}")
+        return Response(
+            {'error': 'Erreur lors de la conversion.'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+def notify_admins_vendor_upgrade(user, vendor_profile):
+    """Notifier les admins d'une demande de conversion"""
+    from django.core.mail import send_mail
+    
+    admins = User.objects.filter(
+        Q(is_staff=True) | Q(is_superuser=True) | Q(role='admin')
+    )
+    
+    subject = "🔄 Demande de conversion en vendeur"
+    message = f"""
+Un acheteur souhaite devenir vendeur sur la plateforme :
+
+📝 Informations :
+- Nom : {user.get_full_name}
+- Email : {user.email}
+- Téléphone : {user.phone_full}
+- Boutique souhaitée : {vendor_profile.shop_name}
+- Compte existant depuis : {user.created_at.strftime('%d/%m/%Y')}
+- Date de la demande : {timezone.now().strftime('%d/%m/%Y %H:%M')}
+
+🔗 Pour traiter la demande : http://localhost:8000/admin/users/user/{user.id}/change/
+"""
+    
+    for admin in admins:
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [admin.email],
+            fail_silently=True
+        )
+
+
+def send_upgrade_confirmation_email(user, vendor_profile):
+    """Envoyer un email de confirmation de demande de conversion"""
+    subject = "📝 Demande de conversion en vendeur reçue"
+    message = f"""
+Bonjour {user.first_name},
+
+Nous avons bien reçu votre demande de conversion en vendeur sur E-Sugu.
+
+📊 **Récapitulatif de votre demande :**
+- Boutique : {vendor_profile.shop_name}
+- Type de compte : {vendor_profile.get_account_type_display()}
+- Statut : En attente de validation
+
+**📋 Prochaines étapes :**
+
+1. **Complétez votre profil vendeur**  
+   Connectez-vous et rendez-vous dans "Mon compte" > "Devenir vendeur" pour finaliser votre profil.
+
+2. **Soumettez vos documents KYC**  
+   - Pièce d'identité (recto/verso)
+   - Justificatif de domicile
+   - Si entreprise : registre de commerce
+
+3. **Attendez la validation**  
+   Notre équipe examinera votre dossier sous 24-48h.
+
+🔗 **Accéder à votre espace :**  
+http://localhost:5173/vendor/upgrade
+
+Une fois votre dossier validé, vous pourrez commencer à vendre sur E-Sugu !
+
+Pour toute question, contactez-nous à support@e-sugu.com.
+
+L'équipe E-Sugu
+"""
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=True
+    )
+
+# users/views.py - Ajoutez cette vue
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def check_upgrade_status(request):
+    """
+    Vérifier le statut de la demande de conversion en vendeur
+    """
+    user = request.user
+    
+    response_data = {
+        'is_already_seller': user.is_seller or user.role == 'seller',
+        'has_vendor_profile': hasattr(user, 'vendor_profile'),
+        'current_role': user.role,
+    }
+    
+    if hasattr(user, 'vendor_profile'):
+        vendor_profile = user.vendor_profile
+        response_data.update({
+            'shop_name': vendor_profile.shop_name,
+            'verification_status': vendor_profile.verification_status,
+            'kyc_submitted': vendor_profile.kyc_submitted_at is not None,
+            'is_completed': vendor_profile.is_completed,
+            'can_create_listing': user.can_create_listing(),
+            'upgrade_status': vendor_profile.status,
+            'rejection_reason': vendor_profile.kyc_rejection_reason if vendor_profile.status == 'rejected' else None,
+        })
+    
+    # Actions recommandées
+    if not response_data['is_already_seller'] and not response_data['has_vendor_profile']:
+        response_data['recommended_action'] = 'upgrade'
+        response_data['message'] = 'Vous pouvez demander à devenir vendeur.'
+    elif response_data['has_vendor_profile'] and response_data['verification_status'] == 'pending':
+        response_data['recommended_action'] = 'wait'
+        response_data['message'] = 'Votre demande est en cours de traitement.'
+    elif response_data['has_vendor_profile'] and response_data['verification_status'] == 'rejected':
+        response_data['recommended_action'] = 'resubmit'
+        response_data['message'] = 'Votre demande a été rejetée. Vous pouvez soumettre à nouveau.'
+    elif response_data['is_already_seller']:
+        response_data['recommended_action'] = 'dashboard'
+        response_data['message'] = 'Vous êtes déjà vendeur. Accédez à votre tableau de bord.'
+    
+    return Response(response_data)

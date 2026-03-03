@@ -128,9 +128,9 @@ class CreateOrderView(APIView):
                 payment_method = request.data.get('payment_method', 'momo')
                 transaction_obj = Transaction.objects.create(
                     order=order,
-                    buyer=user,
+                    user=user,
                     amount=total,
-                    paymenet_method=payment_method,
+                    payment_method=payment_method,
                     status='pending'
                 )
                 
@@ -243,10 +243,6 @@ class ExportOrdersView(APIView):
                 ])
             
             return response
-
-
-# commandes/views.py - MODIFIER OrderStatsView
-
 class OrderStatsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -322,10 +318,7 @@ class OrderStatsView(APIView):
                 'top_vendors': list(top_vendors),
             }
         
-        return Response(response_data)
-    
-# Ajoutez ces classes AVANT ou APRÈS OrderStatsView dans views.py
-
+        return Response(response_data)  
 class AdminOrderStatsView(APIView):
     """Statistiques des commandes pour les administrateurs seulement"""
     permission_classes = [permissions.IsAdminUser]  # 🔥 Admin seulement
@@ -391,8 +384,6 @@ class AdminOrderStatsView(APIView):
                 'cancelled_orders': orders.filter(status='cancelled').count(),
             }
         })
-
-
 class UserOrderStatsView(APIView):
     """Statistiques des commandes pour les utilisateurs normaux seulement"""
     permission_classes = [permissions.IsAuthenticated]
@@ -439,14 +430,12 @@ class UserOrderStatsView(APIView):
             })
         
         return Response({
-            'user_type': 'buyer',
+            'user_type': 'user',
             'total_orders': orders.count(),
             'status_stats': status_stats,
             'total_revenue': float(total_revenue),
             'monthly_orders': monthly_orders,
         })
-# commandes/views.py - AJOUTER ces endpoints
-
 class AdminDashboardStatsView(APIView):
     """Statistiques complètes pour le dashboard admin"""
     permission_classes = [permissions.IsAdminUser]
@@ -552,8 +541,6 @@ class AdminDashboardStatsView(APIView):
                 'end_date': today.strftime('%Y-%m-%d')
             }
         })
-
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_orders_analytics(request):
@@ -598,8 +585,6 @@ def admin_orders_analytics(request):
         'monthly_analytics': monthly_data,
         'weekly_analytics': weekly_data,
     })
-
-# commandes/views.py - AJOUTER
 class VendorOrdersView(APIView):
     """Vue pour que les vendeurs voient leurs commandes"""
     permission_classes = [IsAuthenticated]
@@ -619,7 +604,7 @@ class VendorOrdersView(APIView):
         vendor_transactions = Transaction.objects.filter(
             seller=user,
             status='completed'
-        ).select_related('order', 'listing', 'buyer').exclude(order__isnull=True)
+        ).select_related('order', 'listing', 'user').exclude(order__isnull=True)
         
         # Si vous voulez récupérer directement via OrderItem
         from django.db.models import Q
@@ -680,7 +665,6 @@ class VendorOrdersView(APIView):
             'count': len(orders_data),
             'orders': orders_data
         }, status=status.HTTP_200_OK)
-
 class VendorOrderDetailView(APIView):
     """Détails d'une commande spécifique pour le vendeur"""
     permission_classes = [IsAuthenticated]
@@ -701,7 +685,7 @@ class VendorOrderDetailView(APIView):
             order_data = {
                 'order_id': order.id,
                 'order_number': order.order_number,
-                'buyer': {
+                'user': {
                     'id': order.user.id,
                     'name': order.user.get_full_name(),
                     'email': order.user.email,
@@ -747,8 +731,6 @@ class VendorOrderDetailView(APIView):
                 {'error': 'Commande non trouvée'}, 
                 status=status.HTTP_404_NOT_FOUND
             )
-        
-# commandes/views.py - AJOUTER
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def vendor_orders_debug(request):
@@ -805,11 +787,6 @@ def vendor_orders_debug(request):
     }
     
     return Response(debug_data)
-
-# commandes/views.py - AJOUTER OU MODIFIER
-
-# commandes/views.py - MODIFIER BuyerOrdersViewSet
-
 class BuyerOrdersViewSet(viewsets.ReadOnlyModelViewSet):
     """Commandes où l'utilisateur est l'acheteur"""
     serializer_class = OrderSerializer
@@ -839,7 +816,6 @@ class BuyerOrdersViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(created_at__lte=date_to)
         
         return queryset.order_by('-created_at')
-
 class SellerOrdersViewSet(viewsets.ReadOnlyModelViewSet):
     """Commandes des produits du vendeur"""
     serializer_class = OrderSerializer
@@ -865,8 +841,6 @@ class SellerOrdersViewSet(viewsets.ReadOnlyModelViewSet):
         # ... autres filtres
         
         return queryset
-    
-# commandes/views.py - AJOUTER
 class VendorOrderStatusUpdateView(APIView):
     """Mettre à jour le statut d'une commande pour le vendeur"""
     permission_classes = [IsAuthenticated]
@@ -923,9 +897,6 @@ class VendorOrderStatusUpdateView(APIView):
                 {'error': f'Erreur lors de la mise à jour: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
-# Dans commandes/views.py - AJOUTER
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_time_series_stats(request):
@@ -978,9 +949,6 @@ def admin_time_series_stats(request):
         'end_date': end_date.strftime('%Y-%m-%d'),
         'data': formatted_data
     })
-
-# Dans commandes/views.py - AJOUTER
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_performance_metrics(request):
@@ -1042,9 +1010,6 @@ def admin_performance_metrics(request):
             'avg_customer_lifetime_value': round(customer_stats['avg_spent_per_customer'] or 0, 2),
         }
     })
-
-# Dans commandes/views.py - AJOUTER
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_geographic_analysis(request):
@@ -1092,9 +1057,6 @@ def admin_geographic_analysis(request):
             for item in customers_by_location
         ]
     })
-
-# Dans commandes/views.py - AJOUTER
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_product_analysis(request):
@@ -1208,9 +1170,6 @@ def admin_product_analysis(request):
             }
         }
     })
-
-# Dans commandes/views.py - AJOUTER
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_alerts(request):
@@ -1288,7 +1247,6 @@ def admin_alerts(request):
         'high_priority_alerts': len([a for a in alerts if a['priority'] == 'high']),
         'last_updated': timezone.now().isoformat()
     })
-
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_comprehensive_dashboard(request):
@@ -1394,7 +1352,7 @@ def admin_all_orders(request):
         orders_data.append({
             'id': order.id,
             'order_number': order.order_number,
-            'buyer': {
+            'user': {
                 'id': order.user.id,
                 'email': order.user.email,
                 'first_name': order.user.first_name,
@@ -1432,8 +1390,6 @@ def admin_all_orders(request):
         'previous': f'{request.build_absolute_uri(request.path)}?page={page - 1}' if page > 1 else None,
         'results': orders_data
     })
-
-# Dans commandes/views.py - AJOUTER
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_recent_orders(request):
@@ -1445,7 +1401,7 @@ def admin_recent_orders(request):
     days = int(request.GET.get('days', 7))  # Par défaut 7 derniers jours
     status = request.GET.get('status')
     seller_email = request.GET.get('seller')
-    buyer_email = request.GET.get('buyer')
+    buyer_email = request.GET.get('user')
     min_amount = request.GET.get('min_amount')
     max_amount = request.GET.get('max_amount')
     category = request.GET.get('category')
@@ -1577,7 +1533,7 @@ def admin_recent_orders(request):
         orders_data.append({
             'id': order.id,
             'order_number': order.order_number,
-            'buyer': {
+            'user': {
                 'id': order.user.id,
                 'email': order.user.email,
                 'first_name': order.user.first_name,
@@ -1683,7 +1639,7 @@ def admin_recent_orders(request):
             'days': days,
             'status': status,
             'seller': seller_email,
-            'buyer': buyer_email,
+            'user': buyer_email,
             'min_amount': min_amount,
             'max_amount': max_amount,
             'category': category,
@@ -1692,9 +1648,6 @@ def admin_recent_orders(request):
         },
         'orders': orders_data
     })
-
-
-# Version simplifiée pour le dashboard
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_dashboard_recent_orders(request):
@@ -1720,7 +1673,7 @@ def admin_dashboard_recent_orders(request):
         orders_data.append({
             'id': order.id,
             'order_number': order.order_number,
-            'buyer': {
+            'user': {
                 'email': order.user.email,
                 'name': f"{order.user.first_name or ''} {order.user.last_name or ''}".strip()
             },
@@ -1750,9 +1703,6 @@ def admin_dashboard_recent_orders(request):
         ).count(),
         'recent_orders': orders_data
     })
-
-
-# Commandes nécessitant une attention urgente
 @api_view(['GET'])
 @permission_classes([permissions.IsAdminUser])
 def admin_urgent_orders(request):
@@ -1806,9 +1756,6 @@ def admin_urgent_orders(request):
         'urgent_orders': orders_data,
         'last_checked': timezone.now().isoformat()
     })
-
-# AJOUTEZ CES VUES APRÈS TOUTES LES AUTRES
-
 class InvoiceView(APIView):
     """Générer et télécharger une facture PDF"""
     permission_classes = [permissions.IsAuthenticated]
@@ -1974,8 +1921,6 @@ class InvoiceView(APIView):
                 {'error': f'Erreur lors de la génération de la facture: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-
 class InvoiceURLView(APIView):
     """Retourner une URL de téléchargement de facture (pour les APIs)"""
     permission_classes = [permissions.IsAuthenticated]
@@ -2011,3 +1956,235 @@ class InvoiceURLView(APIView):
                 {'error': 'Commande non trouvée'},
                 status=status.HTTP_404_NOT_FOUND
             )
+class ConfirmDeliveryView(APIView):
+    """Confirmer la réception d'une commande"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id)
+            
+            # Vérifier que l'utilisateur est bien l'acheteur OU un admin
+            if order.user != request.user and not (request.user.is_staff or request.user.is_superuser):
+                return Response(
+                    {'error': 'Vous n\'êtes pas autorisé à confirmer cette commande'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Vérifier le statut actuel
+            if order.status != 'shipped':
+                return Response({
+                    'error': 'Cette commande ne peut pas être confirmée',
+                    'current_status': order.status,
+                    'required_status': 'shipped'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Confirmer la livraison
+            success, message = order.confirm_delivery(confirmed_by=request.user)
+            
+            if success:
+                return Response({
+                    'success': True,
+                    'message': message,
+                    'order_id': order.id,
+                    'order_number': order.order_number,
+                    'new_status': order.status,
+                    'delivered_at': order.delivered_at
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': message
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Order.DoesNotExist:
+            return Response(
+                {'error': 'Commande non trouvée'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Erreur: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+class DeliveryConfirmationStatusView(APIView):
+    """Voir le statut de confirmation d'une commande"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id)
+            
+            # Vérifier l'accès
+            if order.user != request.user and order.listing.user != request.user and not request.user.is_staff:
+                return Response(
+                    {'error': 'Accès non autorisé'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Calculer le temps restant
+            remaining_days = None
+            if order.status == 'shipped' and order.delivery_confirmation_deadline:
+                now = timezone.now()
+                if now < order.delivery_confirmation_deadline:
+                    delta = order.delivery_confirmation_deadline - now
+                    remaining_days = delta.days
+                    remaining_hours = delta.seconds // 3600
+            
+            response_data = {
+                'order_id': order.id,
+                'order_number': order.order_number,
+                'status': order.status,
+                'can_confirm': order.status == 'shipped',
+                'shipped_at': order.shipped_at,
+                'delivered_at': order.delivered_at,
+                'delivery_confirmed_at': order.delivery_confirmed_at,
+                'confirmation_deadline': order.delivery_confirmation_deadline,
+                'auto_confirmation_date': order.delivery_confirmation_deadline,
+                'auto_confirmation_remaining_days': remaining_days,
+                'auto_confirmation_remaining_hours': remaining_hours if remaining_days == 0 else None,
+            }
+            
+            # Ajouter des informations sur le paiement
+            transaction = order.transactions.first()
+            if transaction:
+                response_data['payment'] = {
+                    'status': transaction.status,
+                    'amount': float(transaction.amount),
+                    'will_be_released_on_confirmation': transaction.status == 'held'
+                }
+            
+            return Response(response_data)
+            
+        except Order.DoesNotExist:
+            return Response(
+                {'error': 'Commande non trouvée'},
+                status=status.HTTP_404_NOT_FOUND
+            )      
+class MarkAsShippedView(APIView):
+    """Le vendeur marque la commande comme expédiée"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, order_id):
+        try:
+            # Récupérer la commande qui appartient au vendeur
+            order = Order.objects.filter(
+                id=order_id,
+                items__listing__user=request.user
+            ).first()
+            
+            if not order:
+                return Response(
+                    {'error': 'Commande non trouvée ou vous n\'êtes pas le vendeur'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Vérifier le statut
+            if order.status != 'ready_to_ship':
+                return Response({
+                    'error': 'La commande doit être "Prêt à expédier"',
+                    'current_status': order.status
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Options d'expédition (tracking number, etc.)
+            tracking_number = request.data.get('tracking_number', '')
+            carrier = request.data.get('carrier', '')
+            
+            # Marquer comme expédié
+            order.mark_as_shipped()
+            
+            # Ajouter les infos de suivi si fournies
+            if tracking_number or carrier:
+                # Vous pouvez ajouter ces champs à votre modèle
+                order.tracking_number = tracking_number
+                order.carrier = carrier
+                order.save()
+            
+            return Response({
+                'success': True,
+                'message': 'Commande marquée comme expédiée',
+                'order_id': order.id,
+                'order_number': order.order_number,
+                'new_status': order.status,
+                'shipped_at': order.shipped_at,
+                'confirmation_deadline': order.delivery_confirmation_deadline
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Erreur: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def admin_delivery_alerts(request):
+    """Alertes pour l'admin sur les livraisons"""
+    
+    # Commandes expédiées depuis plus de 5 jours sans confirmation
+    five_days_ago = timezone.now() - timedelta(days=5)
+    late_confirmations = Order.objects.filter(
+        status='shipped',
+        shipped_at__lte=five_days_ago,
+        delivery_confirmed_at__isnull=True
+    ).select_related('user', 'listing__user')
+    
+    # Commandes qui seront auto-confirmées dans les 24h
+    tomorrow = timezone.now() + timedelta(days=1)
+    soon_auto_confirm = Order.objects.filter(
+        status='shipped',
+        delivery_confirmation_deadline__lte=tomorrow,
+        delivery_confirmation_deadline__gt=timezone.now(),
+        delivery_confirmed_at__isnull=True
+    )
+    
+    return Response({
+        'late_confirmations_count': late_confirmations.count(),
+        'late_confirmations': [
+            {
+                'order_id': o.id,
+                'order_number': o.order_number,
+                'buyer_email': o.user.email,
+                'seller_email': o.listing.user.email if o.listing else None,
+                'shipped_at': o.shipped_at,
+                'days_ago': (timezone.now() - o.shipped_at).days
+            }
+            for o in late_confirmations[:10]
+        ],
+        'soon_auto_confirm_count': soon_auto_confirm.count(),
+        'soon_auto_confirm': [
+            {
+                'order_id': o.id,
+                'order_number': o.order_number,
+                'auto_confirm_date': o.delivery_confirmation_deadline,
+                'hours_left': int((o.delivery_confirmation_deadline - timezone.now()).total_seconds() / 3600)
+            }
+            for o in soon_auto_confirm[:10]
+        ]
+    })
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def admin_confirm_order(request, order_id):
+    try:
+        order = Order.objects.get(id=order_id)
+        
+        if order.status != 'pending':
+            return Response({
+                'error': f'La commande ne peut pas être confirmée. Statut actuel: {order.status}'
+            }, status=400)
+        
+        # Appeler la méthode de confirmation
+        if order.confirm_order():
+            return Response({
+                'success': True,
+                'message': 'Commande confirmée avec succès',
+                'order_id': order.id,
+                'new_status': order.status
+            })
+        else:
+            return Response({
+                'error': 'Impossible de confirmer la commande (stock peut-être insuffisant)'
+            }, status=400)
+            
+    except Order.DoesNotExist:
+        return Response({'error': 'Commande non trouvée'}, status=404)

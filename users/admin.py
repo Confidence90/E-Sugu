@@ -236,7 +236,7 @@ L'équipe {site_name}
 
 @admin.register(VendorProfile)
 class VendorProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'shop_name', 'verification_status', 'kyc_confidence_score', 'kyc_submitted_at', 'actions']
+    list_display = ['user', 'shop_name', 'verification_status', 'kyc_confidence_score', 'kyc_submitted_at', 'admin_actions']
     list_filter = ['verification_status', 'account_type', 'status']
     search_fields = ['shop_name', 'user__email', 'user__first_name', 'user__last_name']
     readonly_fields = ['kyc_submitted_at', 'kyc_reviewed_at']

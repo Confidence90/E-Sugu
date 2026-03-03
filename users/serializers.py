@@ -697,3 +697,31 @@ class AdminVendorKYCRecordSerializer(serializers.ModelSerializer):
             'rejection_reason',
             'confidence_score',
         ]
+# users/serializers.py - Ajoutez/modifiez
+
+class UpgradeToSellerSerializer(serializers.Serializer):
+    """
+    Serializer pour la demande de conversion en vendeur
+    """
+    shop_name = serializers.CharField(max_length=255, required=True)
+    account_type = serializers.ChoiceField(
+        choices=VendorProfile.ACCOUNT_TYPE_CHOICES,
+        default='individual'
+    )
+    phone_verification = serializers.CharField(required=False, write_only=True)
+    
+    def validate_shop_name(self, value):
+        # Vérifier que le nom de boutique n'est pas déjà utilisé
+        if VendorProfile.objects.filter(shop_name__iexact=value).exists():
+            raise serializers.ValidationError("Ce nom de boutique est déjà utilisé.")
+        return value
+    
+    def validate(self, attrs):
+        user = self.context['request'].user
+        
+        # Vérifier que l'utilisateur peut demander la conversion
+        can_upgrade, message = user.can_upgrade_to_seller()
+        if not can_upgrade:
+            raise serializers.ValidationError(message)
+        
+        return attrs

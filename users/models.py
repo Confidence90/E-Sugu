@@ -123,12 +123,51 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     
     def save(self, *args, **kwargs):
+        old_instance = None
+        original_pending = None
+
+        # Récupérer l'ancienne instance si l'utilisateur existe
+        if self.pk:
+            try:
+                old_instance = User.objects.get(pk=self.pk)
+                original_pending = old_instance.is_seller_pending
+            except User.DoesNotExist:
+                pass
+
+        # ----------------------------
+        # GESTION ROLE SELLER
+        # ----------------------------
         if self.role == 'seller':
             self.is_seller = True
-            self.is_seller_pending = True  # Toujours bloqué tant que l’admin n’a pas validé
+
+            # 🔁 Transition buyer → seller
+            if old_instance and old_instance.role == 'buyer':
+                self.is_seller_pending = True
+                self.is_verified = False
+
+            # 🆕 Nouveau seller
+            elif self.pk is None:
+                self.is_seller_pending = True
+                self.is_verified = False
+
+            # 🔒 Protection du pending (admin seul peut modifier)
+            elif (
+                original_pending is not None
+                and 'is_seller_pending' not in kwargs.get('update_fields', [])
+            ):
+                self.is_seller_pending = original_pending
+
+        # ----------------------------
+        # GESTION ROLE ADMIN
+        # ----------------------------
         elif self.role == 'admin':
             self.is_seller = False
             self.is_seller_pending = False
+            self.is_verified = True
+
+        # ----------------------------
+        # GESTION ROLE BUYER (ou autre)
+        # ----------------------------
         else:
             self.is_seller = False
             self.is_seller_pending = False
@@ -138,6 +177,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     def can_create_listing(self):
         return (
             self.role == 'seller'
+            and self.is_seller
             and hasattr(self, 'vendor_profile')
             and self.vendor_profile.status == 'approved'
             and self.vendor_profile.verification_status == 'verified'
@@ -149,7 +189,25 @@ class User(AbstractBaseUser, PermissionsMixin):
         return {
             'refresh': str(refresh),
             'access':str(refresh.access_token)}
-    
+    def can_upgrade_to_seller(self):
+        """
+        Vérifie si l'utilisateur peut demander une conversion en vendeur
+        """
+        # Ne peut pas si déjà vendeur
+        if self.is_seller or self.role == 'seller':
+            return False, "Vous êtes déjà vendeur"
+        
+        # Ne peut pas si déjà une demande en cours
+        if hasattr(self, 'vendor_profile') and self.vendor_profile.verification_status == 'pending':
+            return False, "Une demande de conversion est déjà en cours"
+        
+        # Vérifier que le profil est complet
+        required_fields = [self.first_name, self.last_name, self.email, self.phone]
+        if not all(required_fields):
+            return False, "Veuillez compléter votre profil avant de demander la conversion"
+        
+        return True, "Vous pouvez demander la conversion"
+
     @classmethod
     def get_platform_admin(cls):
         """Récupérer un administrateur pour représenter la plateforme"""
